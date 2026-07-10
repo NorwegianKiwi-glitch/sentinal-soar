@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sentinal — SOAR Dashboard</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 2rem; background: Canvas; color: CanvasText; }
+    h1 { margin-bottom: .1rem; }
+    .sub { color: GrayText; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0 2rem; }
+    th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent); font-size: .9rem; vertical-align: top; }
+    th { text-transform: uppercase; font-size: .7rem; letter-spacing: .05em; color: GrayText; }
+    .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .75rem; font-weight: 600; white-space: nowrap; }
+    .badge.PATCHED { background: #15734c2b; color: #1a9c68; }
+    .badge.SNOOZED { background: #b4700a2b; color: #d38f1d; }
+    .badge.REFUSED, .badge.FAILED { background: #b0334a2b; color: #e0587a; }
+    .badge.CLEAN, .badge.AUTO_SKIP { background: #4b55632b; color: #8b93a1; }
+    button { cursor: pointer; font: inherit; }
+    #scan-btn { padding: .5rem 1.1rem; font-weight: 600; border-radius: 6px; border: 1px solid #1c7a82; background: #1c7a82; color: white; }
+    #scan-btn:disabled { opacity: .6; cursor: default; }
+    .row-btn { font-size: .75rem; padding: .3rem .6rem; border-radius: 5px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); background: transparent; color: inherit; }
+    .payload { max-width: 32ch; overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: .75rem; color: GrayText; }
+  </style>
+</head>
+<body>
+  <h1>Sentinal</h1>
+  <p class="sub">SOAR governance console</p>
+  <button id="scan-btn">Run scan now</button>
+
+  <h2>Scan log</h2>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Image</th><th>Time (UTC)</th><th>Action</th><th>Details</th><th></th></tr>
+    </thead>
+    <tbody id="log-body">
+      {% for log in logs %}
+      <tr data-row-id="{{ log.id }}">
+        <td>{{ log.id }}</td>
+        <td>{{ log.image_name }}</td>
+        <td>{{ log.scan_time.strftime("%Y-%m-%d %H:%M") }}</td>
+        <td><span class="badge {{ log.action_taken }}">{{ log.action_taken }}</span></td>
+        <td class="payload">{{ log.log_payload.get("details", "") }}</td>
+        <td><button class="row-btn archive-btn" data-id="{{ log.id }}">Archive</button></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No scans logged yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Active exceptions</h2>
+  <table>
+    <thead>
+      <tr><th>Image</th><th>Status</th><th>Snooze until</th><th>Review after</th><th></th></tr>
+    </thead>
+    <tbody id="exceptions-body">
+      {% for exc in exceptions %}
+      <tr data-row-id="{{ exc.id }}">
+        <td>{{ exc.image_name }}</td>
+        <td><span class="badge {{ exc.status }}">{{ exc.status }}</span></td>
+        <td>{{ exc.snooze_until.strftime("%Y-%m-%d") if exc.snooze_until else "—" }}</td>
+        <td>{{ exc.review_after.strftime("%Y-%m-%d") if exc.review_after else "—" }}</td>
+        <td><button class="row-btn delete-btn" data-id="{{ exc.id }}">Delete</button></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5">No active snoozes or refusals.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script>
+    document.getElementById('scan-btn').addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      button.textContent = 'Scanning…';
+      try {
+        await fetch('/api/scan', { method: 'POST' });
+      } finally {
+        setTimeout(() => location.reload(), 2000);
+      }
+    });
+
+    function wireRowAction(selector, endpoint) {
+      document.querySelectorAll(selector).forEach((button) => {
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          await fetch(endpoint(button.dataset.id), { method: 'POST' });
+          button.closest('tr').remove();
+        });
+      });
+    }
+
+    wireRowAction('.archive-btn', (id) => `/api/logs/${id}/archive`);
+    wireRowAction('.delete-btn', (id) => `/api/exceptions/${id}/delete`);
+  </script>
+</body>
+</html>
