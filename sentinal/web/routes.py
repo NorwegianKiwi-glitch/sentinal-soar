@@ -45,11 +45,15 @@ def trigger_scan():
     from .. import bot
 
     def _run() -> None:
+        bot.post_scan_started_threadsafe()
+        bot.set_scanning_presence_threadsafe(True)
         try:
             count = pipeline.run_scan_cycle(bot.post_alert_threadsafe)
             bot.post_scan_complete_threadsafe(count)
         except Exception as exc:
             bot.post_error_threadsafe("manual scan", str(exc))
+        finally:
+            bot.set_scanning_presence_threadsafe(False)
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"status": "started"}), 202

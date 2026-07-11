@@ -15,6 +15,9 @@ log = logging.getLogger(__name__)
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+IDLE_ACTIVITY = discord.Activity(type=discord.ActivityType.watching, name="for vulnerabilities")
+SCANNING_ACTIVITY = discord.Game(name="Scanning containers…")
+
 
 class DecisionView(discord.ui.View):
     def __init__(self, decision_id: int):
@@ -34,9 +37,11 @@ class DecisionView(discord.ui.View):
             content=f"**{label} — {status}**\n{result['details']}", view=self
         )
 
-    @discord.ui.button(label="Apply Patch", style=discord.ButtonStyle.success, custom_id="sentinal:patch")
+    @discord.ui.button(
+        label="Apply Patch (pull + recreate)", style=discord.ButtonStyle.success, custom_id="sentinal:patch"
+    )
     async def patch(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self._handle(interaction, "patch", "Apply Patch")
+        await self._handle(interaction, "patch", "Apply Patch (pull + recreate)")
 
     @discord.ui.button(label="Snooze (7 Days)", style=discord.ButtonStyle.secondary, custom_id="sentinal:snooze")
     async def snooze(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
@@ -57,13 +62,28 @@ async def _get_channel() -> discord.abc.Messageable:
 
 async def post_alert(decision_id: int, image: str, container_name: str, ai_text: str) -> None:
     channel = await _get_channel()
-    message = f"**Security Alert: {image}**\n({container_name})\n\n{ai_text[:1800]}"
+    header = f"**Security Alert: {image}**\n({container_name})\n\n"
+    footer = (
+        "\n\n---\n"
+        f"**Apply Patch** always does the same thing: re-pull `{image}` and recreate "
+        f"`{container_name}` from it (your data/volumes are untouched). It does **not** "
+        "selectively implement any one of the fixes suggested above — if the analysis "
+        "recommends something else (a different image/tag, a manual package change, etc.), "
+        "this button won't do that; use Refuse or Snooze and handle it by hand instead."
+    )
+    budget = 2000 - len(header) - len(footer)
+    message = f"{header}{ai_text[:budget]}{footer}"
     await channel.send(message, view=DecisionView(decision_id))
+
+
+async def post_scan_started() -> None:
+    channel = await _get_channel()
+    await channel.send("🔍 SOAR scan starting…")
 
 
 async def post_scan_complete(count: int) -> None:
     channel = await _get_channel()
-    await channel.send(f"SOAR scan complete — {count} container(s) evaluated.")
+    await channel.send(f"✅ SOAR scan complete — {count} container(s) evaluated.")
 
 
 async def post_error(source: str, message: str) -> None:
@@ -71,8 +91,16 @@ async def post_error(source: str, message: str) -> None:
     await channel.send(f"**Sentinal error — {source}**\n{message}")
 
 
+async def set_scanning_presence(active: bool) -> None:
+    await bot.change_presence(activity=SCANNING_ACTIVITY if active else IDLE_ACTIVITY)
+
+
 def post_alert_threadsafe(decision_id: int, image: str, container_name: str, ai_text: str) -> None:
     asyncio.run_coroutine_threadsafe(post_alert(decision_id, image, container_name, ai_text), bot.loop)
+
+
+def post_scan_started_threadsafe() -> None:
+    asyncio.run_coroutine_threadsafe(post_scan_started(), bot.loop)
 
 
 def post_scan_complete_threadsafe(count: int) -> None:
@@ -83,9 +111,14 @@ def post_error_threadsafe(source: str, message: str) -> None:
     asyncio.run_coroutine_threadsafe(post_error(source, message), bot.loop)
 
 
+def set_scanning_presence_threadsafe(active: bool) -> None:
+    asyncio.run_coroutine_threadsafe(set_scanning_presence(active), bot.loop)
+
+
 @bot.event
 async def on_ready() -> None:
     log.info("Logged in as %s", bot.user)
+    await bot.change_presence(activity=IDLE_ACTIVITY)
     # re-register button callbacks for any decision that was still pending across a restart
     with db.SessionLocal() as session:
         pending = session.scalars(

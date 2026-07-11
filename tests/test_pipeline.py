@@ -1,4 +1,5 @@
 import datetime as dt
+from types import SimpleNamespace
 
 from sentinal import db as db_module
 from sentinal import pipeline
@@ -89,7 +90,7 @@ def test_resolve_decision_patch_failure_is_logged_as_failed(monkeypatch):
     def _boom(image, container_name, client=None):
         raise RuntimeError("pull failed")
 
-    monkeypatch.setattr(pipeline.docker_client, "pull_and_restart", _boom)
+    monkeypatch.setattr(pipeline.docker_client, "pull_and_recreate", _boom)
 
     result = pipeline.resolve_decision(decision_id, "patch")
 
@@ -115,9 +116,53 @@ def test_resolve_decision_patch_success_is_logged_as_patched(monkeypatch):
         session.refresh(decision)
         decision_id = decision.id
 
-    monkeypatch.setattr(pipeline.docker_client, "pull_and_restart", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline.docker_client, "pull_and_recreate", lambda *a, **k: None)
 
     result = pipeline.resolve_decision(decision_id, "patch")
 
     assert result["ok"] is True
     assert result["action"] == "PATCHED"
+
+
+def test_evaluate_container_logs_clean_scan_with_no_findings(monkeypatch):
+    container = SimpleNamespace(
+        image=SimpleNamespace(tags=["nginx:latest"], id="sha256:fake"),
+        name="nginx-container",
+    )
+    monkeypatch.setattr(
+        pipeline.scanner, "scan_image", lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[])
+    )
+
+    alerts = []
+    pipeline._evaluate_container(container, lambda *a, **k: alerts.append((a, k)))
+
+    assert alerts == []
+    with db_module.SessionLocal() as session:
+        latest_log = session.query(db_module.ScanLog).order_by(db_module.ScanLog.id.desc()).first()
+        assert latest_log.action_taken == "CLEAN"
+        assert latest_log.image_name == "nginx:latest"
+        assert latest_log.log_payload["details"] == "Scanned — no HIGH, CRITICAL vulnerabilities found."
+        assert latest_log.log_payload["status"] == "SUCCESS"
+
+
+def test_evaluate_container_alerts_on_findings(monkeypatch):
+    container = SimpleNamespace(
+        image=SimpleNamespace(tags=["nginx:latest"], id="sha256:fake"),
+        name="nginx-container",
+    )
+    vuln = {"Severity": "CRITICAL", "VulnerabilityID": "CVE-2024-0001", "PkgName": "openssl"}
+    monkeypatch.setattr(
+        pipeline.scanner,
+        "scan_image",
+        lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
+    )
+    monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
+
+    alerts = []
+    pipeline._evaluate_container(container, lambda *a, **k: alerts.append((a, k)))
+
+    assert len(alerts) == 1
+    with db_module.SessionLocal() as session:
+        decision = session.query(db_module.PendingDecision).order_by(db_module.PendingDecision.id.desc()).first()
+        assert decision.image_name == "nginx:latest"
+        assert decision.status == "PENDING"

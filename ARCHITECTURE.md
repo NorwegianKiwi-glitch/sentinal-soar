@@ -61,7 +61,7 @@ forward:
 | v1 (n8n) | v2 (this repo) | Why |
 |---|---|---|
 | SSH to the Pi for every Docker command | `docker` SDK against a socket-mounted `/var/run/docker.sock` | The app now runs on the same host it manages; SSH-to-self and a stored password added nothing |
-| Remediation backgrounded with `nohup … &`; only the wrapper's exit code was checked | `docker_client.pull_and_restart` runs synchronously and lets real failures propagate | A failed pull/restart used to still log `SUCCESS` — see `test_resolve_decision_patch_failure_is_logged_as_failed` |
+| Remediation backgrounded with `nohup … &`; only the wrapper's exit code was checked | `docker_client.pull_and_recreate` runs synchronously and lets real failures propagate | A failed pull/recreate used to still log `SUCCESS` — see `test_resolve_decision_patch_failure_is_logged_as_failed` |
 | `snooze_until = '9999-12-31'` on refusal | `review_after` set on **every** exception, refusals included | Permanent risk acceptance with no re-attestation is an anti-pattern in real vulnerability-management programs, not just here |
 | Dashboard could `DELETE FROM scan_logs` outright | `/api/logs/<id>/archive` soft-deletes (`archived = true`); no hard-delete route exists for the audit table | An audit trail that the tool being audited can erase isn't one — see `test_archive_log_is_soft_delete_not_hard_delete` |
 | Delete queries built by interpolating `targetId` into a SQL string | SQLAlchemy `select()` / ORM everywhere | Was SQL-injection-shaped even with a trusted caller |
@@ -71,12 +71,6 @@ forward:
 
 ## Known limitations (not fixed yet, on purpose)
 
-- **`restart()` doesn't apply the newly pulled image.** Docker's `restart` reuses
-  the image ID a container was created from; pulling a new tag doesn't retroactively
-  change that. Both the n8n original and this first pass have this gap — the
-  correct fix is recreating the container (capture its config via
-  `container.attrs`, stop, remove, run with the same config against the new
-  image) rather than restarting it. Scoped as a follow-up, not solved here.
 - **Docker socket access is root-equivalent.** Mounting `/var/run/docker.sock`
   gives the app container the same practical power as root on the host. Fine
   for a single-user homelab v1; a `docker-socket-proxy` sidecar that

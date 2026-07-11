@@ -45,8 +45,9 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
         return
 
     if not result.has_findings:
+        severities = ", ".join(s.strip() for s in get_settings().trivy_severity.split(","))
         with db.SessionLocal() as session:
-            _write_log(session, image, db.ActionTaken.CLEAN, "No high/critical vulnerabilities found.")
+            _write_log(session, image, db.ActionTaken.CLEAN, f"Scanned — no {severities} vulnerabilities found.")
         return
 
     summary = result.summary_text()
@@ -106,8 +107,8 @@ def resolve_decision(decision_id: int, choice: str) -> dict:
 
 def _apply_patch(image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:
     try:
-        docker_client.pull_and_restart(image, container_name)
-        return db.ActionTaken.PATCHED, True, f"Pulled {image} and restarted {container_name}."
+        docker_client.pull_and_recreate(image, container_name)
+        return db.ActionTaken.PATCHED, True, f"Pulled {image} and recreated {container_name}."
     except Exception as exc:
         log.exception("Remediation failed for %s", image)
         return db.ActionTaken.FAILED, False, f"Remediation failed: {exc}"

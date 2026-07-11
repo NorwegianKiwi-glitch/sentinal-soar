@@ -28,12 +28,16 @@ def _run_scheduler() -> None:
         return
     while True:
         time.sleep(settings.scan_interval_hours * 3600)
+        bot_module.post_scan_started_threadsafe()
+        bot_module.set_scanning_presence_threadsafe(True)
         try:
             count = pipeline.run_scan_cycle(bot_module.post_alert_threadsafe)
             bot_module.post_scan_complete_threadsafe(count)
         except Exception as exc:
             log.exception("Scheduled scan failed")
             bot_module.post_error_threadsafe("scheduled scan", str(exc))
+        finally:
+            bot_module.set_scanning_presence_threadsafe(False)
 
 
 def main() -> None:
