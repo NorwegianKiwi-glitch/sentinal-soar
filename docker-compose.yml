@@ -1,6 +1,9 @@
+name: sentinal-soar
+
 services:
   app:
     build: .
+    image: sentinal-soar-app:latest
     restart: unless-stopped
     ports:
       - "6767:8080"
@@ -33,3 +36,22 @@ services:
 
 volumes:
   pgdata:
+
+x-casaos:
+  id: io.github.norwegiankiwi.sentinal-soar
+  main: app
+  index: /
+  port_map: "6767"
+  scheme: http
+  title:
+    en_us: Sentinal SOAR
+  tagline:
+    en_us: Container vulnerability scanning with human-in-the-loop remediation
+  description:
+    en_us: Scans running containers with Trivy, explains findings with Gemini, and asks for a patch/snooze/refuse decision over Discord before acting.
+  author: NorwegianKiwi-glitch
+  developer: NorwegianKiwi-glitch
+  category: Utilities
+  architectures:
+    - amd64
+    - arm64
