@@ -31,6 +31,29 @@ def _own_container_id() -> str | None:
     return None
 
 
+def _own_container(client: docker.DockerClient) -> Container | None:
+    own_id = _own_container_id()
+    if own_id is None:
+        return None
+    try:
+        return client.containers.get(own_id)
+    except docker.errors.DockerException:
+        return None
+
+
+def _preserved_aliases(endpoint: dict, old: Container) -> list[str]:
+    """Network aliases the replacement container must keep.
+
+    Compose attaches the service name ("db", "app", …) as a DNS alias at
+    creation time; recreating without it silently breaks every container that
+    reaches this one by service name. Only the old container's auto-generated
+    identifiers are dropped — the replacement gets its own.
+    """
+    return [
+        alias for alias in endpoint.get("Aliases") or [] if alias not in (old.name, old.id[:12])
+    ]
+
+
 def pull_and_recreate(image: str, container_name: str, client: docker.DockerClient | None = None) -> None:
     """Pull `image` and recreate `container_name` from it.
 
@@ -43,7 +66,8 @@ def pull_and_recreate(image: str, container_name: str, client: docker.DockerClie
     instead of leaving the service down with no container at all.
 
     Raises ValueError for images that only have a digest (nothing newer can ever be pulled)
-    and RuntimeError when asked to recreate the container this process itself runs in.
+    and RuntimeError for any container in Sentinal's own compose stack — stopping its own app
+    or database kills the remediation (and the audit trail) mid-flight.
     """
     if image.startswith("sha256:") or "@sha256:" in image:
         raise ValueError(
@@ -54,13 +78,21 @@ def pull_and_recreate(image: str, container_name: str, client: docker.DockerClie
     client = client or get_client()
     old = client.containers.get(container_name)
 
-    own_id = _own_container_id()
-    if own_id and old.id.startswith(own_id):
-        raise RuntimeError(
-            "refusing to recreate Sentinal's own container from inside itself — stopping it "
-            "would kill the remediation before the replacement starts. Update Sentinal on "
-            "the host instead: docker compose up -d --build"
-        )
+    own = _own_container(client)
+    if own is not None:
+        if old.id == own.id:
+            raise RuntimeError(
+                "refusing to recreate Sentinal's own container from inside itself — stopping it "
+                "would kill the remediation before the replacement starts. Update Sentinal on "
+                "the host instead: docker compose up -d --build"
+            )
+        own_project = own.labels.get("com.docker.compose.project")
+        if own_project and own_project == old.labels.get("com.docker.compose.project"):
+            raise RuntimeError(
+                f"refusing to recreate {container_name}: it belongs to Sentinal's own compose stack "
+                f"({own_project!r}), and stopping any part of it (like the database) takes Sentinal "
+                "down mid-remediation. Update the stack on the host instead: docker compose up -d --build"
+            )
 
     client.images.pull(image)
 
@@ -75,6 +107,14 @@ def pull_and_recreate(image: str, container_name: str, client: docker.DockerClie
     old.rename(backup_name)
 
     try:
+        networking_config = None
+        primary_endpoint = networks.get(primary_network)
+        if primary_endpoint:
+            aliases = _preserved_aliases(primary_endpoint, old)
+            if aliases:
+                networking_config = client.api.create_networking_config(
+                    {primary_network: client.api.create_endpoint_config(aliases=aliases)}
+                )
         created = client.api.create_container(
             image=image,
             name=container_name,
@@ -84,15 +124,19 @@ def pull_and_recreate(image: str, container_name: str, client: docker.DockerClie
             labels=config.get("Labels"),
             working_dir=config.get("WorkingDir"),
             user=config.get("User"),
+            healthcheck=config.get("Healthcheck"),
             # Inspect reports ExposedPorts as "80/tcp"-style keys; the SDK's `ports`
             # parameter wants (port, proto) tuples and mangles the raw strings.
             ports=[tuple(port.split("/", 1)) for port in (config.get("ExposedPorts") or {})],
             host_config=host_config,
+            networking_config=networking_config,
         )
         container_id = created["Id"]
-        for network_name in networks:
+        for network_name, endpoint in networks.items():
             if network_name != primary_network:
-                client.api.connect_container_to_network(container_id, network_name)
+                client.api.connect_container_to_network(
+                    container_id, network_name, aliases=_preserved_aliases(endpoint, old) or None
+                )
         client.api.start(container_id)
     except Exception:
         old.rename(container_name)

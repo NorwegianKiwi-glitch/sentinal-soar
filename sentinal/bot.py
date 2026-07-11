@@ -27,13 +27,21 @@ class DecisionView(discord.ui.View):
     async def _handle(self, interaction: discord.Interaction, choice: str, label: str) -> None:
         for child in self.children:
             child.disabled = True
+        # Acknowledge within Discord's 3-second window — a real patch pulls an
+        # image, which takes minutes on a Pi, and an unacknowledged interaction
+        # shows the user "interaction failed" even when the patch succeeds.
+        await interaction.response.defer()
         try:
             result = await asyncio.to_thread(pipeline.resolve_decision, self.decision_id, choice)
         except ValueError as exc:
-            await interaction.response.edit_message(content=f"Already handled: {exc}", view=self)
+            await interaction.edit_original_response(content=f"Already handled: {exc}", view=self)
+            return
+        except Exception as exc:
+            log.exception("Resolving decision %d as %s failed", self.decision_id, choice)
+            await interaction.edit_original_response(content=f"**{label} — ERROR**\n{exc}", view=self)
             return
         status = "done" if result["ok"] else "FAILED"
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"**{label} — {status}**\n{result['details']}", view=self
         )
 
