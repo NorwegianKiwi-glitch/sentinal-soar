@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import enum
 
-from sqlalchemy import DateTime, JSON, String, Text, create_engine
+from sqlalchemy import DateTime, JSON, String, Text, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -70,6 +70,7 @@ class PendingDecision(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     image_name: Mapped[str] = mapped_column(String(255), nullable=False)
     container_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    proposed_image: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     ai_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=DecisionStatus.PENDING.value)
@@ -83,3 +84,17 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    _apply_migrations()
+
+
+def _apply_migrations() -> None:
+    """create_all only creates missing tables; additive columns on already
+    existing tables land here. Postgres-only on purpose — tests build a fresh
+    schema from the models on SQLite and never need migrating.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text("ALTER TABLE pending_decisions ADD COLUMN IF NOT EXISTS proposed_image VARCHAR(255)")
+        )

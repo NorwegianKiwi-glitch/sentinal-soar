@@ -60,17 +60,28 @@ async def _get_channel() -> discord.abc.Messageable:
     return channel
 
 
-async def post_alert(decision_id: int, image: str, container_name: str, ai_text: str) -> None:
+async def post_alert(
+    decision_id: int, image: str, container_name: str, ai_text: str, proposed_image: str | None = None
+) -> None:
     channel = await _get_channel()
     header = f"**Security Alert: {image}**\n({container_name})\n\n"
-    footer = (
-        "\n\n---\n"
-        f"**Apply Patch** always does the same thing: re-pull `{image}` and recreate "
-        f"`{container_name}` from it (your data/volumes are untouched). It does **not** "
-        "selectively implement any one of the fixes suggested above — if the analysis "
-        "recommends something else (a different image/tag, a manual package change, etc.), "
-        "this button won't do that; use Refuse or Snooze and handle it by hand instead."
-    )
+    if proposed_image:
+        footer = (
+            "\n\n---\n"
+            f"**Apply Patch** will pull `{proposed_image}` and recreate `{container_name}` "
+            f"from it, replacing `{image}` (your data/volumes are untouched). The proposed "
+            "tag was Trivy-scanned before being suggested. If you'd rather stay on the "
+            "current version, use Snooze or Refuse."
+        )
+    else:
+        footer = (
+            "\n\n---\n"
+            f"**Apply Patch** always does the same thing: re-pull `{image}` and recreate "
+            f"`{container_name}` from it (your data/volumes are untouched). It does **not** "
+            "selectively implement any one of the fixes suggested above — if the analysis "
+            "recommends something else (a different image/tag, a manual package change, etc.), "
+            "this button won't do that; use Refuse or Snooze and handle it by hand instead."
+        )
     budget = 2000 - len(header) - len(footer)
     message = f"{header}{ai_text[:budget]}{footer}"
     await channel.send(message, view=DecisionView(decision_id))
@@ -95,8 +106,12 @@ async def set_scanning_presence(active: bool) -> None:
     await bot.change_presence(activity=SCANNING_ACTIVITY if active else IDLE_ACTIVITY)
 
 
-def post_alert_threadsafe(decision_id: int, image: str, container_name: str, ai_text: str) -> None:
-    asyncio.run_coroutine_threadsafe(post_alert(decision_id, image, container_name, ai_text), bot.loop)
+def post_alert_threadsafe(
+    decision_id: int, image: str, container_name: str, ai_text: str, proposed_image: str | None = None
+) -> None:
+    asyncio.run_coroutine_threadsafe(
+        post_alert(decision_id, image, container_name, ai_text, proposed_image), bot.loop
+    )
 
 
 def post_scan_started_threadsafe() -> None:

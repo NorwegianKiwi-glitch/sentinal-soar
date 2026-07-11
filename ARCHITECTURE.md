@@ -14,6 +14,7 @@ sentinal/
   config.py        env vars -> Settings (fails fast if a required var is missing)
   db.py             SQLAlchemy models: ScanLog, ContainerException, PendingDecision
   docker_client.py  wraps docker-py against /var/run/docker.sock
+  registry.py       Registry v2 API client: lists an image's tags, picks a safe upgrade
   scanner.py        shells out to a bundled trivy binary, parses JSON findings
   ai.py             Gemini wrapper (google-genai)
   pipeline.py       enumerate -> governance check -> scan -> analyze -> log
@@ -51,6 +52,20 @@ primitive in plain Python, so the same behavior is modeled explicitly:
    stop working after a bot restart, which the n8n version had no equivalent
    failure mode for (it never restarts mid-`sendAndWait`, since the entire
    suspended state lives in n8n's own execution store, not in your db).
+
+### Version-bump proposals
+
+Re-pulling the tag a container already runs only fixes anything when the tag
+is mutable (`:latest`); pinned tags like `postgres:14.2` never change. So when
+a scan finds vulnerabilities, the pipeline asks the image's registry for its
+tag list, picks the newest **same-flavor, same-major** tag (`14.2 → 14.19`,
+never `→ 15.x`; `16-alpine` stays `-alpine`; `v2.7.5` keeps its `v`), and
+Trivy-scans that candidate. Only if the candidate has strictly fewer findings
+does it become the decision's `proposed_image`: the Discord alert then says
+what Apply Patch will actually pull, and `resolve_decision` upgrades to it.
+In every other case (no better tag, non-version tags, registry unreachable,
+private repositories) the behavior degrades to the original same-tag re-pull —
+a proposal failure never fails the scan cycle.
 
 ## Deliberate deviations from the n8n prototype
 

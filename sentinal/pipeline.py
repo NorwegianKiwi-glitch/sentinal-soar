@@ -6,14 +6,16 @@ from typing import Protocol
 
 from sqlalchemy import select
 
-from . import ai, db, docker_client, scanner
+from . import ai, db, docker_client, registry, scanner
 from .config import get_settings
 
 log = logging.getLogger(__name__)
 
 
 class AlertSink(Protocol):
-    def __call__(self, decision_id: int, image: str, container_name: str, ai_text: str) -> None: ...
+    def __call__(
+        self, decision_id: int, image: str, container_name: str, ai_text: str, proposed_image: str | None
+    ) -> None: ...
 
 
 def run_scan_cycle(post_alert: AlertSink) -> int:
@@ -57,10 +59,15 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
         log.exception("AI analysis failed for %s", image)
         ai_text = f"(AI analysis unavailable: {exc})\n\n{summary}"
 
+    proposed_image, proposal_note = _propose_version_bump(image, len(result.vulnerabilities))
+    if proposal_note:
+        ai_text = f"{ai_text}\n\n{proposal_note}"
+
     with db.SessionLocal() as session:
         decision = db.PendingDecision(
             image_name=image,
             container_name=name,
+            proposed_image=proposed_image,
             summary=summary,
             ai_analysis=ai_text,
             status=db.DecisionStatus.PENDING.value,
@@ -70,7 +77,41 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
         session.refresh(decision)
         decision_id = decision.id
 
-    post_alert(decision_id, image, name, ai_text)
+    post_alert(decision_id, image, name, ai_text, proposed_image)
+
+
+def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None, str | None]:
+    """Find a newer same-major tag that Trivy confirms has fewer findings.
+
+    Returns (candidate_image, human-readable note), or (None, None) when there
+    is no verifiably better tag. Never raises: a registry hiccup should degrade
+    to the plain same-tag patch, not fail the scan cycle.
+    """
+    if image.startswith("sha256:") or "@sha256:" in image:
+        return None, None
+    try:
+        ref = registry.parse_image_ref(image)
+        if registry.parse_version_tag(ref.tag) is None:
+            return None, None
+        candidate_tag = registry.pick_upgrade_candidate(ref.tag, registry.list_tags(ref))
+        if candidate_tag is None:
+            return None, None
+        candidate = f"{image.rpartition(':')[0]}:{candidate_tag}"
+        candidate_findings = len(scanner.scan_image(candidate).vulnerabilities)
+    except Exception as exc:
+        log.warning("Version-bump lookup failed for %s: %s", image, exc)
+        return None, None
+    if candidate_findings >= current_findings:
+        log.info(
+            "Newest same-major tag %s has %d finding(s) vs %d current — not proposing",
+            candidate, candidate_findings, current_findings,
+        )
+        return None, None
+    note = (
+        f"**Proposed upgrade:** `{candidate}` — Trivy-verified at {candidate_findings} finding(s) "
+        f"vs {current_findings} on the current tag."
+    )
+    return candidate, note
 
 
 def _is_deferred(exception: db.ContainerException | None) -> bool:
@@ -90,7 +131,8 @@ def resolve_decision(decision_id: int, choice: str) -> dict:
             raise ValueError("Decision already resolved or not found")
 
         if choice == "patch":
-            action, ok, details = _apply_patch(decision.image_name, decision.container_name)
+            target_image = decision.proposed_image or decision.image_name
+            action, ok, details = _apply_patch(target_image, decision.image_name, decision.container_name)
         elif choice == "snooze":
             action, ok, details = _snooze(session, decision.image_name, settings.snooze_days)
         elif choice == "refuse":
@@ -105,13 +147,15 @@ def resolve_decision(decision_id: int, choice: str) -> dict:
         return {"action": action.value, "ok": ok, "details": details}
 
 
-def _apply_patch(image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:
+def _apply_patch(target_image: str, current_image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:
     try:
-        docker_client.pull_and_recreate(image, container_name)
-        return db.ActionTaken.PATCHED, True, f"Pulled {image} and recreated {container_name}."
+        docker_client.pull_and_recreate(target_image, container_name)
     except Exception as exc:
-        log.exception("Remediation failed for %s", image)
+        log.exception("Remediation failed for %s", target_image)
         return db.ActionTaken.FAILED, False, f"Remediation failed: {exc}"
+    if target_image != current_image:
+        return db.ActionTaken.PATCHED, True, f"Upgraded {container_name}: {current_image} → {target_image}."
+    return db.ActionTaken.PATCHED, True, f"Pulled {target_image} and recreated {container_name}."
 
 
 def _snooze(session, image: str, days: int) -> tuple[db.ActionTaken, bool, str]:
