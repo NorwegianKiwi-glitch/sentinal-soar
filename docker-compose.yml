@@ -3,7 +3,7 @@ name: sentinal-soar
 services:
   app:
     build: .
-    image: sentinal-soar-app:latest
+    image: ghcr.io/norwegiankiwi-glitch/sentinal-soar-app:latest
     restart: unless-stopped
     ports:
       - "6767:8080"
