@@ -94,6 +94,14 @@ forward:
   base64, not encrypted, over plain HTTP. Acceptable behind a LAN/VPN; put a
   reverse proxy with TLS in front (or a Tailscale/WireGuard network) before
   exposing this beyond your own network.
+- **Patches update the live container, not the definition it came from.**
+  CasaOS (and docker compose) keep their own app definition; Sentinal
+  recreates the container via the Docker API and leaves that definition
+  untouched. The container really runs the new tag, but the CasaOS settings
+  panel still shows the old one — and re-applying the app from CasaOS or
+  compose reverts the patch. After approving an upgrade, set the app's tag
+  in CasaOS to the same version to keep them in sync. Teaching Sentinal to
+  update CasaOS's compose files itself is the natural next increment.
 - **Test coverage is concentrated on `pipeline.py` and the web layer.**
   `scanner.py` (subprocess + Trivy JSON parsing) and `bot.py` (Discord
   interactions) don't have automated tests yet — they need mocked
