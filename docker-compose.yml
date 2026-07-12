@@ -20,6 +20,11 @@ services:
       # Grants the container full control of the host's Docker daemon — see
       # "Known limitations" in ARCHITECTURE.md before exposing this beyond your LAN.
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Mounted at the identical host path so the compose-label file paths on
+      # containers resolve as-is; lets Sentinal rewrite a CasaOS app's image
+      # tag after patching it, so the UI matches reality and a CasaOS
+      # re-apply can't roll the patch back.
+      - /var/lib/casaos/apps:/var/lib/casaos/apps
     depends_on:
       db:
         condition: service_healthy

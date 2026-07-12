@@ -221,6 +221,27 @@ def test_evaluate_container_skips_proposal_when_candidate_is_not_better(monkeypa
         assert decision.proposed_image is None
 
 
+def test_apply_patch_syncs_definition_only_on_real_upgrades(monkeypatch):
+    monkeypatch.setattr(pipeline.docker_client, "pull_and_recreate", lambda *a, **k: None)
+    sync_calls = []
+    monkeypatch.setattr(
+        pipeline.definitions,
+        "sync_image_reference",
+        lambda name, old, new: sync_calls.append((name, old, new)) or "Updated 1 image reference(s) in /x.",
+    )
+
+    action, ok, details = pipeline._apply_patch("redis:6.2.22", "redis:6.2.6", "redis-nextcloud")
+
+    assert ok is True
+    assert action == db_module.ActionTaken.PATCHED
+    assert sync_calls == [("redis-nextcloud", "redis:6.2.6", "redis:6.2.22")]
+    assert "Updated 1 image reference(s)" in details
+
+    sync_calls.clear()
+    pipeline._apply_patch("redis:6.2.6", "redis:6.2.6", "redis-nextcloud")
+    assert sync_calls == []  # same-tag re-pull: definition already correct
+
+
 def test_resolve_decision_rejects_decision_already_in_progress():
     with db_module.SessionLocal() as session:
         decision = db_module.PendingDecision(

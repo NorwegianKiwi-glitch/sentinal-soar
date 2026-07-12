@@ -7,7 +7,7 @@ from typing import Protocol
 
 from sqlalchemy import select, update
 
-from . import ai, db, docker_client, registry, scanner
+from . import ai, db, definitions, docker_client, registry, scanner
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -196,7 +196,12 @@ def _apply_patch(target_image: str, current_image: str, container_name: str) -> 
         log.exception("Remediation failed for %s", target_image)
         return db.ActionTaken.FAILED, False, f"Remediation failed: {exc}"
     if target_image != current_image:
-        return db.ActionTaken.PATCHED, True, f"Upgraded {container_name}: {current_image} → {target_image}."
+        sync_note = definitions.sync_image_reference(container_name, current_image, target_image)
+        return (
+            db.ActionTaken.PATCHED,
+            True,
+            f"Upgraded {container_name}: {current_image} → {target_image}. {sync_note}",
+        )
     return db.ActionTaken.PATCHED, True, f"Pulled {target_image} and recreated {container_name}."
 
 

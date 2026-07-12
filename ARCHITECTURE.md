@@ -94,14 +94,15 @@ forward:
   base64, not encrypted, over plain HTTP. Acceptable behind a LAN/VPN; put a
   reverse proxy with TLS in front (or a Tailscale/WireGuard network) before
   exposing this beyond your own network.
-- **Patches update the live container, not the definition it came from.**
-  CasaOS (and docker compose) keep their own app definition; Sentinal
-  recreates the container via the Docker API and leaves that definition
-  untouched. The container really runs the new tag, but the CasaOS settings
-  panel still shows the old one — and re-applying the app from CasaOS or
-  compose reverts the patch. After approving an upgrade, set the app's tag
-  in CasaOS to the same version to keep them in sync. Teaching Sentinal to
-  update CasaOS's compose files itself is the natural next increment.
+- **Definition sync only reaches mounted files.** After an upgrade, Sentinal
+  rewrites the compose file the container came from (`definitions.py`), so
+  the CasaOS UI shows the real version and a CasaOS re-apply can't roll a
+  patch back; a `.sentinal-bak` copy is left beside the file. This works
+  because CasaOS keeps every app definition under `/var/lib/casaos/apps`,
+  which is bind-mounted into the app container at the identical path. A
+  compose project outside that path degrades to a "set the tag manually"
+  note in the scan log — add another identical-path mount to cover it. The
+  CasaOS web UI may show the old tag until its page is refreshed.
 - **Test coverage is concentrated on `pipeline.py` and the web layer.**
   `scanner.py` (subprocess + Trivy JSON parsing) and `bot.py` (Discord
   interactions) don't have automated tests yet — they need mocked
