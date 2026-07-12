@@ -1,13 +1,20 @@
 # Backups
 
-Automated nightly backups of everything the Pi's apps care about, so that a
-bad upgrade (or a bad day) is an inconvenience instead of a loss. Set up
+Backups of everything the Pi's apps care about, taken exactly when they
+matter. Deliberately **not** on a schedule: the Pi has one small SSD, so
+snapshots exist to survive upgrades, not to be an archive. Set up
 2026-07-12; lives entirely on the Pi.
 
 ## What gets backed up, and when
 
-A systemd timer runs **every night at 03:30** (`sentinal-backup.timer` →
-`sentinal-backup.service` → `/usr/local/bin/sentinal-backup.sh`). Each run:
+Backups run at two moments:
+
+- **Automatically, as step one of every Major Upgrade** — Sentinal takes a
+  snapshot before touching anything, refuses to upgrade if the backup fails,
+  and prints the snapshot id in the Discord result and the scan log.
+- **Manually, whenever you want one:** `sudo /usr/local/bin/sentinal-backup.sh`
+
+Each run of `/usr/local/bin/sentinal-backup.sh`:
 
 1. **SQL-dumps every running database container** (anything whose image looks
    like postgres/mariadb/mysql) into `/DATA/Backups/db-dumps/<container>.sql.gz`
@@ -19,11 +26,11 @@ A systemd timer runs **every night at 03:30** (`sentinal-backup.timer` →
    - `/var/lib/casaos/apps` — every app's compose definition
    - `/var/lib/docker/volumes` — docker named volumes
    - `/DATA/Backups/db-dumps` — the SQL dumps from step 1
-3. **Applies retention**: keeps 7 daily, 4 weekly, and 3 monthly snapshots,
-   pruning the rest.
+3. **Applies retention**: keeps only the **last 3 snapshots**, pruning the
+   rest — bounded disk use on the single small SSD.
 
-Because restic deduplicates, a nightly snapshot of 42 GB only stores what
-actually changed since yesterday.
+Because restic deduplicates, a new snapshot of 42 GB only stores what
+actually changed since the previous one.
 
 ## Where everything lives
 
@@ -32,8 +39,7 @@ actually changed since yesterday.
 | Restic repository (the backups) | `/DATA/Backups/restic-repo` |
 | Latest SQL dumps | `/DATA/Backups/db-dumps/` |
 | Backup script | `/usr/local/bin/sentinal-backup.sh` |
-| Schedule | `systemctl list-timers sentinal-backup.timer` |
-| Log of every run | `/var/log/sentinal-backup.log` |
+| Output of Sentinal-triggered runs | the upgrade's Discord/scan-log entry (snapshot id) and `docker logs sentinal-soar-app-1` |
 | Repository password | `/root/.config/sentinal-backup/password` |
 
 > ⚠️ **Copy the repository password into Vaultwarden now**
@@ -51,9 +57,8 @@ actually changed since yesterday.
 ## Everyday commands
 
 ```bash
-sudo systemctl start sentinal-backup.service   # run a backup right now
-tail -30 /var/log/sentinal-backup.log          # see how the last run went
-sudo sentinal-restic snapshots                 # list all snapshots
+sudo /usr/local/bin/sentinal-backup.sh         # run a backup right now
+sudo sentinal-restic snapshots                 # list all snapshots (tags show why each exists)
 sudo sentinal-restic ls latest | less          # browse the newest snapshot
 sudo sentinal-restic check                     # verify repository integrity (do this monthly)
 ```
@@ -61,11 +66,9 @@ sudo sentinal-restic check                     # verify repository integrity (do
 `sentinal-restic` is a thin wrapper that points plain restic at the right
 repository and password file — every normal restic command works through it.
 
-**Before any major upgrade (like immich v2 → v3): run a manual backup first.**
-
-```bash
-sudo systemctl start sentinal-backup.service && tail -5 /var/log/sentinal-backup.log
-```
+You do **not** need to back up before a Major Upgrade — the button does it
+for you and shows the snapshot id in its result message. Use that id in the
+restore commands below instead of `latest` when newer snapshots exist.
 
 ## Restore: the immich upgrade went wrong
 

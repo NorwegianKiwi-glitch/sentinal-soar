@@ -244,11 +244,16 @@ def test_resolve_decision_major_runs_compose_and_retires_siblings(monkeypatch):
         session.refresh(sibling)
         decision_id, sibling_id = decision.id, sibling.id
 
-    applied = []
+    events = []
+    monkeypatch.setattr(
+        pipeline.backup,
+        "run_pre_upgrade_backup",
+        lambda app: events.append(("backup", app)) or "cafe1234",
+    )
     monkeypatch.setattr(
         pipeline.compose,
         "apply_major_upgrade",
-        lambda target, current, container: applied.append((target, current, container))
+        lambda target, current, container: events.append(("upgrade", target, current, container))
         or ("big-bear-immich", "Major upgrade of app 'big-bear-immich': done."),
     )
     project_containers = [
@@ -265,15 +270,18 @@ def test_resolve_decision_major_runs_compose_and_retires_siblings(monkeypatch):
 
     result = pipeline.resolve_decision(decision_id, "major")
 
-    assert applied == [
+    assert events == [
+        ("backup", "immich-server"),  # the snapshot exists before anything is touched
         (
+            "upgrade",
             "ghcr.io/immich-app/immich-server:v3.0.2",
             "ghcr.io/immich-app/immich-server:v2.7.5",
             "immich-server",
-        )
+        ),
     ]
     assert result["ok"] is True
     assert result["action"] == "MAJOR_UPGRADED"
+    assert "Pre-upgrade snapshot cafe1234 taken." in result["details"]
     assert "Retired 1 stale sibling alert(s)" in result["details"]
     with db_module.SessionLocal() as session:
         # the sibling's patch button would have downgraded the freshly-upgraded app
@@ -281,6 +289,37 @@ def test_resolve_decision_major_runs_compose_and_retires_siblings(monkeypatch):
         assert session.get(db_module.PendingDecision, decision_id).status == "RESOLVED"
         latest = session.query(db_module.ScanLog).order_by(db_module.ScanLog.id.desc()).first()
         assert latest.action_taken == "MAJOR_UPGRADED"
+
+
+def test_resolve_decision_major_aborts_when_backup_fails(monkeypatch):
+    with db_module.SessionLocal() as session:
+        decision = db_module.PendingDecision(
+            image_name="ghcr.io/immich-app/immich-server:v2.7.5",
+            container_name="immich-server",
+            proposed_major_image="ghcr.io/immich-app/immich-server:v3.0.2",
+            summary="fake vulnerability summary",
+            status="PENDING",
+        )
+        session.add(decision)
+        session.commit()
+        session.refresh(decision)
+        decision_id = decision.id
+
+    def _no_backup(app):
+        raise RuntimeError("repository locked")
+
+    monkeypatch.setattr(pipeline.backup, "run_pre_upgrade_backup", _no_backup)
+    upgraded = []
+    monkeypatch.setattr(
+        pipeline.compose, "apply_major_upgrade", lambda *a, **k: upgraded.append(a)
+    )
+
+    result = pipeline.resolve_decision(decision_id, "major")
+
+    assert upgraded == []  # no snapshot, no upgrade
+    assert result["ok"] is False
+    assert result["action"] == "FAILED"
+    assert "NOT attempted" in result["details"]
 
 
 def test_resolve_decision_major_without_target_is_rejected():

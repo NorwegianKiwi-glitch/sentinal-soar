@@ -109,7 +109,11 @@ class DecisionView(discord.ui.View):
                 + ", ".join(f"`{companion}`" for companion in companions[:5])
                 + " — majors sometimes require updating these too; check the release notes.",
             ]
-        lines += ["", "Data migrations usually run forward-only — make sure backups exist before confirming."]
+        lines += [
+            "",
+            "A fresh backup snapshot is taken automatically before anything is touched "
+            "(adds a few minutes); if the backup fails, the upgrade is not attempted.",
+        ]
         await interaction.response.edit_message(
             content="\n".join(lines)[:2000], view=ConfirmMajorView(self.decision_id)
         )

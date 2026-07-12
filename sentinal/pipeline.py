@@ -7,7 +7,7 @@ from typing import Protocol
 
 from sqlalchemy import select, update
 
-from . import ai, compose, db, definitions, docker_client, registry, scanner
+from . import ai, backup, compose, db, definitions, docker_client, registry, scanner
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -255,12 +255,29 @@ def _apply_patch(target_image: str, current_image: str, container_name: str) -> 
 
 
 def _apply_major_upgrade(target_image: str, current_image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:
-    try:
-        with _remediation_lock:
+    with _remediation_lock:
+        # No snapshot, no upgrade: majors can migrate data forward-only, so the
+        # restore point must exist before anything is touched.
+        try:
+            snapshot_id = backup.run_pre_upgrade_backup(container_name)
+        except Exception as exc:
+            log.exception("Pre-upgrade backup for %s failed", container_name)
+            return (
+                db.ActionTaken.FAILED,
+                False,
+                f"Major upgrade NOT attempted — the pre-upgrade backup failed: {exc}",
+            )
+        try:
             project, details = compose.apply_major_upgrade(target_image, current_image, container_name)
-    except Exception as exc:
-        log.exception("Major upgrade to %s failed", target_image)
-        return db.ActionTaken.FAILED, False, f"Major upgrade failed: {exc}"
+        except Exception as exc:
+            log.exception("Major upgrade to %s failed", target_image)
+            return (
+                db.ActionTaken.FAILED,
+                False,
+                f"Major upgrade failed: {exc} — pre-upgrade snapshot {snapshot_id} is ready for "
+                "restore, see BACKUPS.md.",
+            )
+    details = f"Pre-upgrade snapshot {snapshot_id} taken. {details}"
     stale = _resolve_sibling_decisions(project)
     if stale:
         # A compose up moves the whole app, so alerts for its other containers

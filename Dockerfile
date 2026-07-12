@@ -4,6 +4,7 @@
 # Go binaries, so the alpine->debian jump is fine.
 FROM aquasec/trivy:latest AS trivy
 FROM docker:cli AS dockercli
+FROM restic/restic:latest AS restic
 
 FROM python:3.12-slim AS runtime
 
@@ -14,6 +15,7 @@ RUN apt-get update \
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+COPY --from=restic /usr/bin/restic /usr/local/bin/restic
 
 WORKDIR /app
 COPY requirements.txt .
