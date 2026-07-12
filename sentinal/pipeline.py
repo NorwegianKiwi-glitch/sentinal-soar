@@ -131,10 +131,20 @@ def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None
             newest_tag = registry.newest_release(ref.tag, tags)
             if newest_tag is None:
                 return None, None, None
+            major = f"{image.rpartition(':')[0]}:{newest_tag}"
+            if _is_database_image(ref.repository):
+                # A pg14 data dir cannot be opened by a pg16 binary: swapping a
+                # database engine's image across majors can only crash it, so
+                # this never becomes a button.
+                return None, None, (
+                    f"**A newer major exists** (`{major}`) but `{image}` is a database engine — "
+                    "major versions cannot read each other's data files, so a one-click image "
+                    "swap would only crash it. Upgrade it deliberately with a dump/restore when "
+                    "ready (see BACKUPS.md); minor updates keep arriving as normal patches."
+                )
             # A newer major exists but the old major line is over: never a
             # one-click patch (migrations, breaking changes), but the human
             # gets a dedicated, confirm-gated button for it.
-            major = f"{image.rpartition(':')[0]}:{newest_tag}"
             return None, major, (
                 f"**No same-major upgrade exists** for `{image}` — the project has moved on to "
                 f"`{major}`. Major upgrades can require migration steps; review the release "
@@ -235,6 +245,13 @@ def resolve_decision(decision_id: int, choice: str) -> dict:
 # One remediation at a time: every approval pulls an image, and concurrent
 # multi-hundred-MB pulls can IO-starve a Pi until SSH and the dashboard freeze.
 _remediation_lock = threading.Lock()
+
+_DATABASE_REPOS = ("postgres", "mariadb", "mysql", "mongo")
+
+
+def _is_database_image(repository: str) -> bool:
+    name = repository.rsplit("/", 1)[-1]
+    return any(engine in name for engine in _DATABASE_REPOS)
 
 
 def _apply_patch(target_image: str, current_image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:

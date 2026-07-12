@@ -223,6 +223,37 @@ def test_evaluate_container_skips_proposal_when_candidate_is_not_better(monkeypa
         assert decision.proposed_image is None
 
 
+def test_evaluate_container_never_offers_major_button_for_database_engines(monkeypatch):
+    container = SimpleNamespace(
+        image=SimpleNamespace(
+            tags=["ghcr.io/immich-app/postgres:14-vectorchord0.3.0-pgvectors0.2.0"], id="sha256:fake"
+        ),
+        name="immich-postgres",
+    )
+    vuln = {"Severity": "CRITICAL", "VulnerabilityID": "CVE-2024-0001", "PkgName": "openssl"}
+    monkeypatch.setattr(
+        pipeline.scanner,
+        "scan_image",
+        lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
+    )
+    monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
+    monkeypatch.setattr(
+        pipeline.registry,
+        "list_tags_for_upgrade",
+        lambda ref: ["14-vectorchord0.3.0-pgvectors0.2.0", "16-vectorchord0.3.0-pgvectors0.2.0"],
+    )
+
+    pipeline._evaluate_container(container, lambda *a, **k: None)
+
+    with db_module.SessionLocal() as session:
+        decision = session.query(db_module.PendingDecision).order_by(db_module.PendingDecision.id.desc()).first()
+        # a pg16 binary cannot read a pg14 data dir — swapping the image would only crash it
+        assert decision.proposed_major_image is None
+        assert decision.proposed_image is None
+        assert "database engine" in decision.ai_analysis
+        assert "dump/restore" in decision.ai_analysis
+
+
 def test_resolve_decision_major_runs_compose_and_retires_siblings(monkeypatch):
     with db_module.SessionLocal() as session:
         decision = db_module.PendingDecision(
