@@ -221,6 +221,36 @@ def test_evaluate_container_skips_proposal_when_candidate_is_not_better(monkeypa
         assert decision.proposed_image is None
 
 
+def test_evaluate_container_does_not_realert_while_decision_open(monkeypatch):
+    with db_module.SessionLocal() as session:
+        session.add(
+            db_module.PendingDecision(
+                image_name="nginx:latest",
+                container_name="nginx-container",
+                summary="already awaiting a human",
+                status="PENDING",
+            )
+        )
+        session.commit()
+
+    container = SimpleNamespace(
+        image=SimpleNamespace(tags=["nginx:latest"], id="sha256:fake"),
+        name="nginx-container",
+    )
+    scans, alerts = [], []
+    monkeypatch.setattr(pipeline.scanner, "scan_image", lambda image: scans.append(image))
+
+    pipeline._evaluate_container(container, lambda *a, **k: alerts.append(a))
+
+    assert scans == []  # no redundant Trivy scan while the alert is open
+    assert alerts == []
+    with db_module.SessionLocal() as session:
+        assert session.query(db_module.PendingDecision).count() == 1
+        latest = session.query(db_module.ScanLog).order_by(db_module.ScanLog.id.desc()).first()
+        assert latest.action_taken == "AUTO_SKIP"
+        assert "awaiting a human" in latest.log_payload["details"]
+
+
 def test_apply_patch_syncs_definition_only_on_real_upgrades(monkeypatch):
     monkeypatch.setattr(pipeline.docker_client, "pull_and_recreate", lambda *a, **k: None)
     sync_calls = []

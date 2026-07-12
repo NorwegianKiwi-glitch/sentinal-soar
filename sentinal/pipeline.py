@@ -39,6 +39,28 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
             _write_log(session, image, db.ActionTaken.AUTO_SKIP, "Active snooze or refusal on file.")
             return
 
+        open_decision = session.scalar(
+            select(db.PendingDecision).where(
+                db.PendingDecision.image_name == image,
+                db.PendingDecision.container_name == name,
+                db.PendingDecision.status.in_(
+                    [db.DecisionStatus.PENDING.value, db.DecisionStatus.IN_PROGRESS.value]
+                ),
+            )
+        )
+        if open_decision is not None:
+            # Re-alerting while a human hasn't answered the previous alert just
+            # breeds duplicate Discord messages whose buttons race each other
+            # (and duplicate remediations when both get clicked). It also lets
+            # us skip the redundant Trivy scan and AI call entirely.
+            _write_log(
+                session,
+                image,
+                db.ActionTaken.AUTO_SKIP,
+                f"Alert for decision #{open_decision.id} is still awaiting a human in Discord; not re-alerting.",
+            )
+            return
+
     try:
         result = scanner.scan_image(image)
     except Exception as exc:
