@@ -29,6 +29,7 @@ class ExceptionStatus(str, enum.Enum):
 
 class DecisionStatus(str, enum.Enum):
     PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
     RESOLVED = "RESOLVED"
 
 

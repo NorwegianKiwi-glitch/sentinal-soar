@@ -27,10 +27,14 @@ class DecisionView(discord.ui.View):
     async def _handle(self, interaction: discord.Interaction, choice: str, label: str) -> None:
         for child in self.children:
             child.disabled = True
-        # Acknowledge within Discord's 3-second window — a real patch pulls an
-        # image, which takes minutes on a Pi, and an unacknowledged interaction
-        # shows the user "interaction failed" even when the patch succeeds.
-        await interaction.response.defer()
+        # Acknowledge within Discord's 3-second window with visible progress and
+        # the buttons actually disabled — a real patch pulls an image, which can
+        # take minutes on a Pi. A silent defer() looks like nothing happened and
+        # leaves the buttons clickable, inviting duplicate remediations.
+        await interaction.response.edit_message(
+            content=f"⏳ **{label} — working…** (pulling an image can take several minutes on the Pi)",
+            view=self,
+        )
         try:
             result = await asyncio.to_thread(pipeline.resolve_decision, self.decision_id, choice)
         except ValueError as exc:
@@ -145,8 +149,17 @@ async def on_ready() -> None:
     # re-register button callbacks for any decision that was still pending across a restart
     with db.SessionLocal() as session:
         pending = session.scalars(
-            select(db.PendingDecision).where(db.PendingDecision.status == db.DecisionStatus.PENDING.value)
+            select(db.PendingDecision).where(
+                db.PendingDecision.status.in_(
+                    [db.DecisionStatus.PENDING.value, db.DecisionStatus.IN_PROGRESS.value]
+                )
+            )
         ).all()
+        # IN_PROGRESS here means the app died mid-remediation; hand the human
+        # back a working button instead of a decision claimed forever.
+        for decision in pending:
+            decision.status = db.DecisionStatus.PENDING.value
+        session.commit()
         for decision in pending:
             bot.add_view(DecisionView(decision.id))
     log.info("Re-registered %d pending decision(s)", len(pending))

@@ -221,6 +221,63 @@ def test_evaluate_container_skips_proposal_when_candidate_is_not_better(monkeypa
         assert decision.proposed_image is None
 
 
+def test_resolve_decision_rejects_decision_already_in_progress():
+    with db_module.SessionLocal() as session:
+        decision = db_module.PendingDecision(
+            image_name="nginx:latest",
+            container_name="nginx-container",
+            summary="fake vulnerability summary",
+            status="IN_PROGRESS",
+        )
+        session.add(decision)
+        session.commit()
+        session.refresh(decision)
+        decision_id = decision.id
+
+    try:
+        pipeline.resolve_decision(decision_id, "patch")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+    with db_module.SessionLocal() as session:
+        assert session.get(db_module.PendingDecision, decision_id).status == "IN_PROGRESS"
+
+
+def test_resolve_decision_releases_claim_when_resolution_raises(monkeypatch):
+    with db_module.SessionLocal() as session:
+        decision = db_module.PendingDecision(
+            image_name="redis:7",
+            container_name="redis-container",
+            summary="fake vulnerability summary",
+            status="PENDING",
+        )
+        session.add(decision)
+        session.commit()
+        session.refresh(decision)
+        decision_id = decision.id
+
+    def _boom(session, image, days):
+        raise RuntimeError("db exploded mid-snooze")
+
+    monkeypatch.setattr(pipeline, "_snooze", _boom)
+
+    try:
+        pipeline.resolve_decision(decision_id, "snooze")
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+    # The claim must be released so the human gets a working button back,
+    # and nothing may be logged for a resolution that never happened.
+    with db_module.SessionLocal() as session:
+        assert session.get(db_module.PendingDecision, decision_id).status == "PENDING"
+        logged = (
+            session.query(db_module.ScanLog).filter_by(image_name="redis:7").count()
+        )
+        assert logged == 0
+
+
 def test_resolve_decision_patch_pulls_the_proposed_image(monkeypatch):
     with db_module.SessionLocal() as session:
         decision = db_module.PendingDecision(

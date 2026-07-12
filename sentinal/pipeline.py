@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import threading
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from . import ai, db, docker_client, registry, scanner
 from .config import get_settings
@@ -123,33 +124,74 @@ def _is_deferred(exception: db.ContainerException | None) -> bool:
 
 
 def resolve_decision(decision_id: int, choice: str) -> dict:
-    """choice: 'patch' | 'snooze' | 'refuse'. Called from a Discord button handler."""
-    settings = get_settings()
-    with db.SessionLocal() as session:
-        decision = session.get(db.PendingDecision, decision_id)
-        if decision is None or decision.status != db.DecisionStatus.PENDING.value:
-            raise ValueError("Decision already resolved or not found")
+    """choice: 'patch' | 'snooze' | 'refuse'. Called from a Discord button handler.
 
+    The decision is claimed atomically up front instead of holding one session
+    open across the remediation: a patch pulls an image, which can take minutes
+    on a Pi, and a second click during that window must not start a duplicate
+    remediation — nor should a DB hiccup at the end erase the audit trail of a
+    remediation that already happened.
+    """
+    settings = get_settings()
+
+    with db.SessionLocal() as session:
+        claimed = session.execute(
+            update(db.PendingDecision)
+            .where(
+                db.PendingDecision.id == decision_id,
+                db.PendingDecision.status == db.DecisionStatus.PENDING.value,
+            )
+            .values(status=db.DecisionStatus.IN_PROGRESS.value)
+        ).rowcount
+        if not claimed:
+            session.rollback()
+            raise ValueError("Decision already resolved, in progress, or not found")
+        decision = session.get(db.PendingDecision, decision_id)
+        image_name = decision.image_name
+        container_name = decision.container_name
+        proposed_image = decision.proposed_image
+        session.commit()
+
+    try:
         if choice == "patch":
-            target_image = decision.proposed_image or decision.image_name
-            action, ok, details = _apply_patch(target_image, decision.image_name, decision.container_name)
+            action, ok, details = _apply_patch(proposed_image or image_name, image_name, container_name)
         elif choice == "snooze":
-            action, ok, details = _snooze(session, decision.image_name, settings.snooze_days)
+            with db.SessionLocal() as session:
+                action, ok, details = _snooze(session, image_name, settings.snooze_days)
+                session.commit()
         elif choice == "refuse":
-            action, ok, details = _refuse(session, decision.image_name, settings.refuse_review_days)
+            with db.SessionLocal() as session:
+                action, ok, details = _refuse(session, image_name, settings.refuse_review_days)
+                session.commit()
         else:
             raise ValueError(f"Unknown choice: {choice}")
+    except Exception:
+        with db.SessionLocal() as session:
+            session.execute(
+                update(db.PendingDecision)
+                .where(db.PendingDecision.id == decision_id)
+                .values(status=db.DecisionStatus.PENDING.value)
+            )
+            session.commit()
+        raise
 
+    with db.SessionLocal() as session:
+        decision = session.get(db.PendingDecision, decision_id)
         decision.status = db.DecisionStatus.RESOLVED.value
         decision.resolved_at = dt.datetime.utcnow()
-        _write_log(session, decision.image_name, action, details, ok=ok)
-        session.commit()
+        _write_log(session, image_name, action, details, ok=ok)
         return {"action": action.value, "ok": ok, "details": details}
+
+
+# One remediation at a time: every approval pulls an image, and concurrent
+# multi-hundred-MB pulls can IO-starve a Pi until SSH and the dashboard freeze.
+_remediation_lock = threading.Lock()
 
 
 def _apply_patch(target_image: str, current_image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:
     try:
-        docker_client.pull_and_recreate(target_image, container_name)
+        with _remediation_lock:
+            docker_client.pull_and_recreate(target_image, container_name)
     except Exception as exc:
         log.exception("Remediation failed for %s", target_image)
         return db.ActionTaken.FAILED, False, f"Remediation failed: {exc}"
