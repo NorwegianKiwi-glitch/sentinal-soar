@@ -15,6 +15,8 @@ sentinal/
   db.py             SQLAlchemy models: ScanLog, ContainerException, PendingDecision
   docker_client.py  wraps docker-py against /var/run/docker.sock
   registry.py       Registry v2 API client: lists an image's tags, picks a safe upgrade
+  definitions.py    keeps the CasaOS/compose file of a patched container in sync
+  compose.py        confirm-gated major upgrades: rewrite the app's definition, compose up
   scanner.py        shells out to a bundled trivy binary, parses JSON findings
   ai.py             Gemini wrapper (google-genai)
   pipeline.py       enumerate -> governance check -> scan -> analyze -> log
@@ -66,6 +68,31 @@ what Apply Patch will actually pull, and `resolve_decision` upgrades to it.
 In every other case (no better tag, non-version tags, registry unreachable,
 private repositories) the behavior degrades to the original same-tag re-pull —
 a proposal failure never fails the scan cycle.
+
+Two refinements keep this useful on awkward repositories. Mega-repos that
+tag every commit (immich) overflow the page cap before their release tags
+appear, so a truncated listing triggers a second one seeded with
+`last=<current tag>` — in insertion-ordered registries like GHCR that means
+"everything published since the running release". And when the same-major
+line is simply over (immich v2 → v3), the alert states the newest release as
+information for the human instead of proposing it: major upgrades can
+require migration steps and never hide behind the one-click patch.
+
+### Major upgrades (confirm-gated)
+
+When only a newer major exists, the alert grows a **Major Upgrade** button.
+It never acts on the first click: it swaps to a confirmation that shows
+exactly which image references will move (same registry + namespace + tag
+move together, so immich's server and machine-learning bump in lockstep),
+warns about pinned companion images it will *not* touch, and reminds about
+backups — data migrations run forward-only. On confirm, `compose.py`
+rewrites the app's definition (`.sentinal-bak` kept), then runs
+`docker compose -p <project> -f <file> up -d` via the docker CLI baked into
+the image — the same mechanism CasaOS uses, so the definition stays the
+source of truth. If the new version fails to come up, the old definition is
+restored and re-applied. A successful major upgrade also retires the app's
+other pending alerts, whose patch buttons would otherwise downgrade
+freshly-upgraded containers.
 
 ## Deliberate deviations from the n8n prototype
 

@@ -7,7 +7,7 @@ from typing import Protocol
 
 from sqlalchemy import select, update
 
-from . import ai, db, definitions, docker_client, registry, scanner
+from . import ai, compose, db, definitions, docker_client, registry, scanner
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -15,7 +15,13 @@ log = logging.getLogger(__name__)
 
 class AlertSink(Protocol):
     def __call__(
-        self, decision_id: int, image: str, container_name: str, ai_text: str, proposed_image: str | None
+        self,
+        decision_id: int,
+        image: str,
+        container_name: str,
+        ai_text: str,
+        proposed_image: str | None,
+        proposed_major_image: str | None,
     ) -> None: ...
 
 
@@ -82,7 +88,7 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
         log.exception("AI analysis failed for %s", image)
         ai_text = f"(AI analysis unavailable: {exc})\n\n{summary}"
 
-    proposed_image, proposal_note = _propose_version_bump(image, len(result.vulnerabilities))
+    proposed_image, proposed_major_image, proposal_note = _propose_version_bump(image, len(result.vulnerabilities))
     if proposal_note:
         ai_text = f"{ai_text}\n\n{proposal_note}"
 
@@ -91,6 +97,7 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
             image_name=image,
             container_name=name,
             proposed_image=proposed_image,
+            proposed_major_image=proposed_major_image,
             summary=summary,
             ai_analysis=ai_text,
             status=db.DecisionStatus.PENDING.value,
@@ -100,53 +107,56 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
         session.refresh(decision)
         decision_id = decision.id
 
-    post_alert(decision_id, image, name, ai_text, proposed_image)
+    post_alert(decision_id, image, name, ai_text, proposed_image, proposed_major_image)
 
 
-def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None, str | None]:
+def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None, str | None, str | None]:
     """Find a newer same-major tag that Trivy confirms has fewer findings.
 
-    Returns (candidate_image, human-readable note), or (None, None) when there
-    is no verifiably better tag. Never raises: a registry hiccup should degrade
-    to the plain same-tag patch, not fail the scan cycle.
+    Returns (candidate_image, major_image, human-readable note). At most one of
+    the first two is set: a same-major candidate becomes the one-click patch
+    target, while a cross-major release only ever arms the confirm-gated Major
+    Upgrade button. Never raises: a registry hiccup should degrade to the plain
+    same-tag patch, not fail the scan cycle.
     """
     if image.startswith("sha256:") or "@sha256:" in image:
-        return None, None
+        return None, None, None
     try:
         ref = registry.parse_image_ref(image)
         if registry.parse_version_tag(ref.tag) is None:
-            return None, None
+            return None, None, None
         tags = registry.list_tags_for_upgrade(ref)
         candidate_tag = registry.pick_upgrade_candidate(ref.tag, tags)
         if candidate_tag is None:
             newest_tag = registry.newest_release(ref.tag, tags)
             if newest_tag is None:
-                return None, None
-            # A newer major exists but the old major line is over: too risky to
-            # one-click (migrations, breaking changes) yet too important to
-            # keep quiet about.
-            return None, (
+                return None, None, None
+            # A newer major exists but the old major line is over: never a
+            # one-click patch (migrations, breaking changes), but the human
+            # gets a dedicated, confirm-gated button for it.
+            major = f"{image.rpartition(':')[0]}:{newest_tag}"
+            return None, major, (
                 f"**No same-major upgrade exists** for `{image}` — the project has moved on to "
-                f"`{image.rpartition(':')[0]}:{newest_tag}`. Major upgrades can require migration "
-                "steps; review the release notes and upgrade via CasaOS when ready. The patch "
-                "button below only re-pulls the current tag."
+                f"`{major}`. Major upgrades can require migration steps; review the release "
+                "notes first, then use the **Major Upgrade** button below (it asks for "
+                "confirmation and re-applies the whole app), or upgrade via CasaOS."
             )
         candidate = f"{image.rpartition(':')[0]}:{candidate_tag}"
         candidate_findings = len(scanner.scan_image(candidate).vulnerabilities)
     except Exception as exc:
         log.warning("Version-bump lookup failed for %s: %s", image, exc)
-        return None, None
+        return None, None, None
     if candidate_findings >= current_findings:
         log.info(
             "Newest same-major tag %s has %d finding(s) vs %d current — not proposing",
             candidate, candidate_findings, current_findings,
         )
-        return None, None
+        return None, None, None
     note = (
         f"**Proposed upgrade:** `{candidate}` — Trivy-verified at {candidate_findings} finding(s) "
         f"vs {current_findings} on the current tag."
     )
-    return candidate, note
+    return candidate, None, note
 
 
 def _is_deferred(exception: db.ContainerException | None) -> bool:
@@ -184,11 +194,16 @@ def resolve_decision(decision_id: int, choice: str) -> dict:
         image_name = decision.image_name
         container_name = decision.container_name
         proposed_image = decision.proposed_image
+        proposed_major_image = decision.proposed_major_image
         session.commit()
 
     try:
         if choice == "patch":
             action, ok, details = _apply_patch(proposed_image or image_name, image_name, container_name)
+        elif choice == "major":
+            if not proposed_major_image:
+                raise ValueError("No major upgrade is recorded for this decision")
+            action, ok, details = _apply_major_upgrade(proposed_major_image, image_name, container_name)
         elif choice == "snooze":
             with db.SessionLocal() as session:
                 action, ok, details = _snooze(session, image_name, settings.snooze_days)
@@ -237,6 +252,78 @@ def _apply_patch(target_image: str, current_image: str, container_name: str) -> 
             f"Upgraded {container_name}: {current_image} → {target_image}. {sync_note}",
         )
     return db.ActionTaken.PATCHED, True, f"Pulled {target_image} and recreated {container_name}."
+
+
+def _apply_major_upgrade(target_image: str, current_image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:
+    try:
+        with _remediation_lock:
+            project, details = compose.apply_major_upgrade(target_image, current_image, container_name)
+    except Exception as exc:
+        log.exception("Major upgrade to %s failed", target_image)
+        return db.ActionTaken.FAILED, False, f"Major upgrade failed: {exc}"
+    stale = _resolve_sibling_decisions(project)
+    if stale:
+        # A compose up moves the whole app, so alerts for its other containers
+        # now describe versions that no longer run — and their patch buttons
+        # would downgrade. Retire them; the next scan re-evaluates fresh.
+        details += f" Retired {stale} stale sibling alert(s) for this app."
+    return db.ActionTaken.MAJOR_UPGRADED, True, details
+
+
+def _resolve_sibling_decisions(project: str) -> int:
+    try:
+        client = docker_client.get_client()
+        names = [
+            container.name
+            for container in client.containers.list(
+                all=True, filters={"label": f"com.docker.compose.project={project}"}
+            )
+        ]
+        if not names:
+            return 0
+        with db.SessionLocal() as session:
+            resolved = session.execute(
+                update(db.PendingDecision)
+                .where(
+                    db.PendingDecision.container_name.in_(names),
+                    db.PendingDecision.status == db.DecisionStatus.PENDING.value,
+                )
+                .values(status=db.DecisionStatus.RESOLVED.value, resolved_at=dt.datetime.utcnow())
+            ).rowcount
+            session.commit()
+            return resolved
+    except Exception:
+        log.exception("Retiring sibling decisions for %s failed", project)
+        return 0
+
+
+def preview_major_upgrade(decision_id: int) -> tuple[str, str, list[str], list[str]]:
+    """(target image, project, family refs, pinned companions) for the confirm prompt."""
+    with db.SessionLocal() as session:
+        decision = session.get(db.PendingDecision, decision_id)
+        if decision is None or not decision.proposed_major_image:
+            raise RuntimeError("No major upgrade is recorded for this decision")
+        target = decision.proposed_major_image
+        current = decision.image_name
+        container_name = decision.container_name
+    project, family, companions = compose.preview_major_upgrade(container_name, current)
+    return target, project, family, companions
+
+
+def get_decision_view_data(decision_id: int) -> tuple[str, str, str, str | None, str | None]:
+    """(image, container, ai_text, proposed_image, proposed_major_image) — lets the
+    bot rebuild the original alert message, e.g. after a cancelled confirmation."""
+    with db.SessionLocal() as session:
+        decision = session.get(db.PendingDecision, decision_id)
+        if decision is None:
+            raise RuntimeError("Decision not found")
+        return (
+            decision.image_name,
+            decision.container_name,
+            decision.ai_analysis or decision.summary,
+            decision.proposed_image,
+            decision.proposed_major_image,
+        )
 
 
 def _snooze(session, image: str, days: int) -> tuple[db.ActionTaken, bool, str]:

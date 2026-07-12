@@ -17,6 +17,7 @@ class ActionTaken(str, enum.Enum):
     CLEAN = "CLEAN"
     AUTO_SKIP = "AUTO_SKIP"
     PATCHED = "PATCHED"
+    MAJOR_UPGRADED = "MAJOR_UPGRADED"
     SNOOZED = "SNOOZED"
     REFUSED = "REFUSED"
     FAILED = "FAILED"
@@ -72,6 +73,7 @@ class PendingDecision(Base):
     image_name: Mapped[str] = mapped_column(String(255), nullable=False)
     container_name: Mapped[str] = mapped_column(String(255), nullable=False)
     proposed_image: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    proposed_major_image: Mapped[str | None] = mapped_column(String(255), nullable=True)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     ai_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=DecisionStatus.PENDING.value)
@@ -98,4 +100,7 @@ def _apply_migrations() -> None:
     with engine.begin() as conn:
         conn.execute(
             text("ALTER TABLE pending_decisions ADD COLUMN IF NOT EXISTS proposed_image VARCHAR(255)")
+        )
+        conn.execute(
+            text("ALTER TABLE pending_decisions ADD COLUMN IF NOT EXISTS proposed_major_image VARCHAR(255)")
         )

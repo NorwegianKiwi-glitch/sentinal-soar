@@ -41,6 +41,14 @@ def _own_container(client: docker.DockerClient) -> Container | None:
         return None
 
 
+def own_compose_project(client: docker.DockerClient | None = None) -> str | None:
+    """Compose project of the container this process runs in, or None."""
+    own = _own_container(client or get_client())
+    if own is None:
+        return None
+    return own.labels.get("com.docker.compose.project")
+
+
 def _preserved_aliases(endpoint: dict, old: Container) -> list[str]:
     """Network aliases the replacement container must keep.
 

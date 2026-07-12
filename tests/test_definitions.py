@@ -25,6 +25,28 @@ def test_rewrite_replaces_exact_references_only():
     assert "ghcr.io/x/vaultwarden/server:1.32.7" in rewritten
 
 
+def test_find_image_family_groups_same_namespace_and_tag():
+    text = (
+        "services:\n"
+        "  server:\n"
+        "    image: ghcr.io/immich-app/immich-server:v2.7.5\n"
+        "  ml:\n"
+        '    image: "ghcr.io/immich-app/immich-machine-learning:v2.7.5"\n'
+        "  db:\n"
+        "    image: ghcr.io/immich-app/postgres:14-vectorchord0.3.0\n"
+        "  cache:\n"
+        "    image: redis:6.2-alpine\n"
+    )
+
+    family, companions = definitions.find_image_family(text, "ghcr.io/immich-app/immich-server:v2.7.5")
+
+    assert family == [
+        "ghcr.io/immich-app/immich-server:v2.7.5",
+        "ghcr.io/immich-app/immich-machine-learning:v2.7.5",
+    ]
+    assert companions == ["ghcr.io/immich-app/postgres:14-vectorchord0.3.0", "redis:6.2-alpine"]
+
+
 def _client_with_labels(labels):
     client = mock.Mock()
     client.containers.get.return_value.labels = labels

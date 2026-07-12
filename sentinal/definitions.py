@@ -20,11 +20,37 @@ import re
 import shutil
 from pathlib import Path
 
-from . import docker_client
+from . import docker_client, registry
 
 log = logging.getLogger(__name__)
 
 _CONFIG_FILES_LABEL = "com.docker.compose.project.config_files"
+_IMAGE_LINE_RE = re.compile(r"^\s*image:\s*[\"']?([^\s\"'#]+)", re.MULTILINE)
+
+
+def find_image_family(text: str, current_image: str) -> tuple[list[str], list[str]]:
+    """Split a compose file's image refs into the family that upgrades together
+    with `current_image` and the pinned companions that stay untouched.
+
+    Family means same registry, same namespace, and the same tag — immich's
+    server and machine-learning images move in lockstep, while its pinned
+    postgres/redis (different repos or tags) are companions the human gets
+    warned about. Each family member keeps its own repository; only the tag
+    moves.
+    """
+    current = registry.parse_image_ref(current_image)
+    current_namespace = current.repository.rsplit("/", 1)[0]
+    family: list[str] = []
+    companions: list[str] = []
+    for ref_str in dict.fromkeys(_IMAGE_LINE_RE.findall(text)):
+        ref = registry.parse_image_ref(ref_str)
+        is_family = (
+            ref.registry == current.registry
+            and ref.repository.rsplit("/", 1)[0] == current_namespace
+            and ref.tag == current.tag
+        )
+        (family if is_family else companions).append(ref_str)
+    return family, companions
 
 
 def sync_image_reference(container_name: str, old_image: str, new_image: str) -> str:

@@ -223,6 +223,87 @@ def test_evaluate_container_skips_proposal_when_candidate_is_not_better(monkeypa
         assert decision.proposed_image is None
 
 
+def test_resolve_decision_major_runs_compose_and_retires_siblings(monkeypatch):
+    with db_module.SessionLocal() as session:
+        decision = db_module.PendingDecision(
+            image_name="ghcr.io/immich-app/immich-server:v2.7.5",
+            container_name="immich-server",
+            proposed_major_image="ghcr.io/immich-app/immich-server:v3.0.2",
+            summary="fake vulnerability summary",
+            status="PENDING",
+        )
+        sibling = db_module.PendingDecision(
+            image_name="ghcr.io/immich-app/immich-machine-learning:v2.7.5",
+            container_name="immich-machine-learning",
+            summary="fake vulnerability summary",
+            status="PENDING",
+        )
+        session.add_all([decision, sibling])
+        session.commit()
+        session.refresh(decision)
+        session.refresh(sibling)
+        decision_id, sibling_id = decision.id, sibling.id
+
+    applied = []
+    monkeypatch.setattr(
+        pipeline.compose,
+        "apply_major_upgrade",
+        lambda target, current, container: applied.append((target, current, container))
+        or ("big-bear-immich", "Major upgrade of app 'big-bear-immich': done."),
+    )
+    project_containers = [
+        SimpleNamespace(name="immich-server"),
+        SimpleNamespace(name="immich-machine-learning"),
+    ]
+    monkeypatch.setattr(
+        pipeline.docker_client,
+        "get_client",
+        lambda: SimpleNamespace(
+            containers=SimpleNamespace(list=lambda all=True, filters=None: project_containers)
+        ),
+    )
+
+    result = pipeline.resolve_decision(decision_id, "major")
+
+    assert applied == [
+        (
+            "ghcr.io/immich-app/immich-server:v3.0.2",
+            "ghcr.io/immich-app/immich-server:v2.7.5",
+            "immich-server",
+        )
+    ]
+    assert result["ok"] is True
+    assert result["action"] == "MAJOR_UPGRADED"
+    assert "Retired 1 stale sibling alert(s)" in result["details"]
+    with db_module.SessionLocal() as session:
+        # the sibling's patch button would have downgraded the freshly-upgraded app
+        assert session.get(db_module.PendingDecision, sibling_id).status == "RESOLVED"
+        assert session.get(db_module.PendingDecision, decision_id).status == "RESOLVED"
+        latest = session.query(db_module.ScanLog).order_by(db_module.ScanLog.id.desc()).first()
+        assert latest.action_taken == "MAJOR_UPGRADED"
+
+
+def test_resolve_decision_major_without_target_is_rejected():
+    with db_module.SessionLocal() as session:
+        decision = db_module.PendingDecision(
+            image_name="a:1", container_name="c", summary="s", status="PENDING"
+        )
+        session.add(decision)
+        session.commit()
+        session.refresh(decision)
+        decision_id = decision.id
+
+    try:
+        pipeline.resolve_decision(decision_id, "major")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+    with db_module.SessionLocal() as session:
+        # the failed attempt must release its claim so the buttons still work
+        assert session.get(db_module.PendingDecision, decision_id).status == "PENDING"
+
+
 def test_evaluate_container_does_not_realert_while_decision_open(monkeypatch):
     with db_module.SessionLocal() as session:
         session.add(
@@ -355,7 +436,8 @@ def test_evaluate_container_mentions_newer_major_without_proposing_it(monkeypatc
     assert scans == ["ghcr.io/immich-app/immich-server:v2.7.5"]  # no candidate scanned
     with db_module.SessionLocal() as session:
         decision = session.query(db_module.PendingDecision).order_by(db_module.PendingDecision.id.desc()).first()
-        assert decision.proposed_image is None  # a major bump is never the patch target
+        assert decision.proposed_image is None  # a major bump is never the one-click patch target
+        assert decision.proposed_major_image == "ghcr.io/immich-app/immich-server:v3.0.2"
         assert "No same-major upgrade exists" in decision.ai_analysis
         assert "immich-server:v3.0.2" in decision.ai_analysis
 

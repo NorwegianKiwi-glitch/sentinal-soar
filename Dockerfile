@@ -1,6 +1,9 @@
-# Trivy binary is copied from Aqua's official image rather than installed via
-# apt inside this image — keeps the runtime image small and version-pinned.
+# Trivy and the docker CLI (with the compose plugin, used for confirm-gated
+# major upgrades) are copied from their official images rather than installed
+# via apt — keeps the runtime image small and version-pinned. Both are static
+# Go binaries, so the alpine->debian jump is fine.
 FROM aquasec/trivy:latest AS trivy
+FROM docker:cli AS dockercli
 
 FROM python:3.12-slim AS runtime
 
@@ -9,6 +12,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 
 WORKDIR /app
 COPY requirements.txt .
