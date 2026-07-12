@@ -83,6 +83,15 @@ def test_newest_release_crosses_majors_but_skips_prereleases():
     assert registry.newest_release("v2.7.5", tags) == "v3.0.2"
 
 
+def test_newest_release_never_mistakes_date_tags_for_versions():
+    # n8nio/n8n once shipped date tags like 20230811 — version twenty million
+    # is not an upgrade, and proposing it broke a live n8n (amd64-only image).
+    assert registry.newest_release("2.30.3", ["2.30.3", "20230811", "3.1.0"]) == "3.1.0"
+    assert registry.newest_release("2.30.3", ["20230811"]) is None
+    # single-component tags share the shape, so the major-jump cap protects them
+    assert registry.newest_release("16", ["18", "20230811"]) == "18"
+
+
 def test_newest_release_none_when_current_is_newest():
     assert registry.newest_release("v3.0.2", ["v3.0.1", "v3.0.2"]) is None
     assert registry.newest_release("latest", ["v3.0.2"]) is None

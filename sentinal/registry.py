@@ -103,13 +103,20 @@ def pick_upgrade_candidate(current_tag: str, tags: list[str]) -> str | None:
     return best[1] if best else None
 
 
+# A "new major" more than this far ahead of the current one is almost
+# certainly not a version at all (n8n once published date tags like 20230811,
+# which must never read as version twenty million).
+_MAX_MAJOR_JUMP = 10
+
+
 def newest_release(current_tag: str, tags: list[str]) -> str | None:
     """Newest same-flavor release regardless of major version.
 
     For informing a human when no safe same-major bump exists (e.g. the
     project abandoned the old major) — never something to auto-patch to.
-    Same prefix and suffix rules as pick_upgrade_candidate, which also keeps
-    prerelease suffixes like `-rc.3` out.
+    Same shape rules as pick_upgrade_candidate (prefix, suffix, and component
+    count must match, which also keeps prereleases like `-rc.3` and date-style
+    tags out), plus a cap on how far the leading number may jump.
     """
     current = parse_version_tag(current_tag)
     if current is None:
@@ -121,7 +128,9 @@ def newest_release(current_tag: str, tags: list[str]) -> str | None:
             parsed is None
             or parsed.prefix != current.prefix
             or parsed.suffix != current.suffix
+            or len(parsed.numbers) != len(current.numbers)
             or parsed.numbers <= current.numbers
+            or parsed.numbers[0] > current.numbers[0] + _MAX_MAJOR_JUMP
         ):
             continue
         if best is None or parsed.numbers > best[0]:
