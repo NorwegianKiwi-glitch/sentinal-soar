@@ -108,6 +108,25 @@ def test_upgrade_listing_seeks_from_current_tag_when_truncated(monkeypatch):
     assert registry.pick_upgrade_candidate(ref.tag, tags) == "v2.8.0"
 
 
+def test_upgrade_seek_pages_until_newer_release_then_stops(monkeypatch):
+    monkeypatch.setattr(registry, "_MAX_PAGES", 1)
+    ref = registry.parse_image_ref("ghcr.io/immich-app/immich-machine-learning:v2.7.5")
+    session = mock.Mock()
+    next_link = {"next": {"url": "/v2/x/tags/list?n=1000&last=x"}}
+    session.get.side_effect = [
+        _response(json_body={"tags": ["commit-0"]}, links=next_link),  # plain pass: truncated
+        _response(json_body={"tags": ["commit-1"]}, links=next_link),  # seek page 0
+        _response(json_body={"tags": ["v3.0.0"]}, links=next_link),  # seek page 1: newer release
+        _response(json_body={"tags": ["commit-2"]}, links=next_link),  # grace page
+        _response(json_body={"tags": ["v3.0.2"]}, links=next_link),  # grace page, then stop
+    ]
+
+    tags = registry.list_tags_for_upgrade(ref, session=session)
+
+    assert session.get.call_count == 5  # stopped without fetching a sixth page
+    assert registry.newest_release("v2.7.5", tags) == "v3.0.2"
+
+
 def test_upgrade_listing_does_not_seek_when_listing_is_complete():
     ref = registry.parse_image_ref("n8nio/n8n:1.123.0")
     session = mock.Mock()

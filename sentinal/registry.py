@@ -22,6 +22,12 @@ import requests
 DOCKER_HUB_REGISTRY = "registry-1.docker.io"
 _PAGE_SIZE = 1000
 _MAX_PAGES = 10
+# The seeded rescue pass may page much further: repos like immich-machine-learning
+# publish several flavor tags per commit, so tens of thousands of tags can sit
+# between the running release and the next one. It exits early once a newer
+# same-flavor release has shown up (see list_tags_for_upgrade).
+_MAX_SEEK_PAGES = 60
+_SEEK_GRACE_PAGES = 2
 _TIMEOUT = 30
 
 _VERSION_TAG_RE = re.compile(r"^(v?)(\d+(?:\.\d+)*)(.*)$")
@@ -131,21 +137,43 @@ def list_tags(ref: ImageRef, session: requests.Session | None = None) -> list[st
 def list_tags_for_upgrade(ref: ImageRef, session: requests.Session | None = None) -> list[str]:
     """Tag listing tuned for finding something newer than `ref.tag`.
 
-    Mega-repositories (immich publishes a tag per commit) blow past the page
-    cap long before their release tags appear, because registries like GHCR
-    list tags in insertion order — newest last. When the plain listing comes
-    back truncated, a second listing seeded with `last=<current tag>` resumes
-    from the very tag the container is running, which in insertion order means
-    "everything published since this release". On lexically-ordered registries
-    the seeded slice is less complete, but those rarely truncate at all.
+    Mega-repositories (immich publishes several tags per commit) blow past the
+    page cap long before their release tags appear, because registries like
+    GHCR list tags in insertion order — newest last. When the plain listing
+    comes back truncated, a second listing seeded with `last=<current tag>`
+    resumes from the very tag the container is running, which in insertion
+    order means "everything published since this release". That pass pages
+    until a newer same-flavor release has been seen (plus a small grace so a
+    slightly newer one right behind it isn't missed), bounded by
+    _MAX_SEEK_PAGES. On lexically-ordered registries the seeded slice is less
+    complete, but those rarely truncate at all.
     """
     session = session or requests.Session()
     tags, truncated = _capped_listing(session, ref)
-    if truncated and ref.tag != "latest":
-        seeded, _ = _capped_listing(session, ref, last=ref.tag)
-        seen = set(tags)
-        tags += [tag for tag in seeded if tag not in seen]
+    if not truncated or ref.tag == "latest":
+        return tags
+
+    current = parse_version_tag(ref.tag)
+    seen = set(tags)
+    stop_after: int | None = None
+    for page_index, page in enumerate(_iter_tag_pages(session, ref, last=ref.tag)):
+        tags += [tag for tag in page if tag not in seen]
+        seen.update(page)
+        if stop_after is None and current and any(_is_newer_same_flavor(tag, current) for tag in page):
+            stop_after = page_index + _SEEK_GRACE_PAGES
+        if (stop_after is not None and page_index >= stop_after) or page_index + 1 >= _MAX_SEEK_PAGES:
+            break
     return tags
+
+
+def _is_newer_same_flavor(tag: str, current: VersionTag) -> bool:
+    parsed = parse_version_tag(tag)
+    return (
+        parsed is not None
+        and parsed.prefix == current.prefix
+        and parsed.suffix == current.suffix
+        and parsed.numbers > current.numbers
+    )
 
 
 def _capped_listing(
@@ -153,12 +181,22 @@ def _capped_listing(
 ) -> tuple[list[str], bool]:
     """Up to _MAX_PAGES of tags (optionally resuming after `last`), plus
     whether the registry still had more pages when we stopped."""
+    tags: list[str] = []
+    pages = _iter_tag_pages(session, ref, last=last)
+    for page_index, page in enumerate(pages):
+        tags.extend(page)
+        if page_index + 1 >= _MAX_PAGES:
+            return tags, True
+    return tags, False
+
+
+def _iter_tag_pages(session: requests.Session, ref: ImageRef, last: str | None = None):
+    """Yield tag pages, following pagination links until the registry runs out."""
     url = f"https://{ref.registry}/v2/{ref.repository}/tags/list?n={_PAGE_SIZE}"
     if last:
         url += f"&last={quote(last)}"
     token: str | None = None
-    tags: list[str] = []
-    for _ in range(_MAX_PAGES):
+    while True:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         response = session.get(url, headers=headers, timeout=_TIMEOUT)
         if response.status_code == 401 and token is None:
@@ -166,12 +204,11 @@ def _capped_listing(
             headers = {"Authorization": f"Bearer {token}"}
             response = session.get(url, headers=headers, timeout=_TIMEOUT)
         response.raise_for_status()
-        tags.extend(response.json().get("tags") or [])
+        yield response.json().get("tags") or []
         next_url = response.links.get("next", {}).get("url")
         if not next_url:
-            return tags, False
+            return
         url = next_url if next_url.startswith("http") else f"https://{ref.registry}{next_url}"
-    return tags, True
 
 
 def _anonymous_pull_token(session: requests.Session, challenge: str, ref: ImageRef) -> str:
