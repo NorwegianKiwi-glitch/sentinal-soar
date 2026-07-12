@@ -78,6 +78,47 @@ def _response(status=200, json_body=None, headers=None, links=None):
     return response
 
 
+def test_newest_release_crosses_majors_but_skips_prereleases():
+    tags = ["v2.7.5", "v3.0.0-rc.3", "v3", "v3.0.1", "v3.0.2", "commit-abc"]
+    assert registry.newest_release("v2.7.5", tags) == "v3.0.2"
+
+
+def test_newest_release_none_when_current_is_newest():
+    assert registry.newest_release("v3.0.2", ["v3.0.1", "v3.0.2"]) is None
+    assert registry.newest_release("latest", ["v3.0.2"]) is None
+
+
+def test_upgrade_listing_seeks_from_current_tag_when_truncated(monkeypatch):
+    monkeypatch.setattr(registry, "_MAX_PAGES", 2)
+    ref = registry.parse_image_ref("ghcr.io/immich-app/immich-server:v2.7.5")
+    session = mock.Mock()
+    next_link = {"next": {"url": "/v2/immich-app/immich-server/tags/list?n=1000&last=x"}}
+    session.get.side_effect = [
+        _response(json_body={"tags": ["commit-aaa"]}, links=next_link),
+        _response(json_body={"tags": ["commit-bbb"]}, links=next_link),  # cap hit: truncated
+        _response(json_body={"tags": ["commit-ccc", "v2.7.6"]}, links=next_link),
+        _response(json_body={"tags": ["v2.8.0", "commit-bbb"]}, links={}),
+    ]
+
+    tags = registry.list_tags_for_upgrade(ref, session=session)
+
+    assert tags == ["commit-aaa", "commit-bbb", "commit-ccc", "v2.7.6", "v2.8.0"]
+    seeded_url = session.get.call_args_list[2].args[0]
+    assert "last=v2.7.5" in seeded_url
+    assert registry.pick_upgrade_candidate(ref.tag, tags) == "v2.8.0"
+
+
+def test_upgrade_listing_does_not_seek_when_listing_is_complete():
+    ref = registry.parse_image_ref("n8nio/n8n:1.123.0")
+    session = mock.Mock()
+    session.get.side_effect = [_response(json_body={"tags": ["1.123.0", "1.124.2"]}, links={})]
+
+    tags = registry.list_tags_for_upgrade(ref, session=session)
+
+    assert tags == ["1.123.0", "1.124.2"]
+    assert session.get.call_count == 1  # complete listing: no seeded second pass
+
+
 def test_list_tags_follows_anonymous_token_challenge():
     ref = registry.parse_image_ref("n8nio/n8n:1.123.0")
     session = mock.Mock()

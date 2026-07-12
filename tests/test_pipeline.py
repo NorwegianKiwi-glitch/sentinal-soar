@@ -187,7 +187,9 @@ def test_evaluate_container_proposes_trivy_verified_upgrade(monkeypatch):
         lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=findings_by_image[image]),
     )
     monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
-    monkeypatch.setattr(pipeline.registry, "list_tags", lambda ref: ["1.122.0", "1.123.0", "1.124.2", "latest"])
+    monkeypatch.setattr(
+        pipeline.registry, "list_tags_for_upgrade", lambda ref: ["1.122.0", "1.123.0", "1.124.2", "latest"]
+    )
 
     alerts = []
     pipeline._evaluate_container(container, lambda *a, **k: alerts.append((a, k)))
@@ -212,7 +214,7 @@ def test_evaluate_container_skips_proposal_when_candidate_is_not_better(monkeypa
         lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
     )
     monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
-    monkeypatch.setattr(pipeline.registry, "list_tags", lambda ref: ["1.123.0", "1.124.2"])
+    monkeypatch.setattr(pipeline.registry, "list_tags_for_upgrade", lambda ref: ["1.123.0", "1.124.2"])
 
     pipeline._evaluate_container(container, lambda *a, **k: None)
 
@@ -327,6 +329,35 @@ def test_resolve_decision_releases_claim_when_resolution_raises(monkeypatch):
             session.query(db_module.ScanLog).filter_by(image_name="redis:7").count()
         )
         assert logged == 0
+
+
+def test_evaluate_container_mentions_newer_major_without_proposing_it(monkeypatch):
+    container = SimpleNamespace(
+        image=SimpleNamespace(tags=["ghcr.io/immich-app/immich-server:v2.7.5"], id="sha256:fake"),
+        name="immich-server",
+    )
+    vuln = {"Severity": "CRITICAL", "VulnerabilityID": "CVE-2024-0001", "PkgName": "openssl"}
+    scans = []
+    monkeypatch.setattr(
+        pipeline.scanner,
+        "scan_image",
+        lambda image: scans.append(image)
+        or pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
+    )
+    monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
+    monkeypatch.setattr(
+        pipeline.registry, "list_tags_for_upgrade", lambda ref: ["v2.7.5", "v3.0.0-rc.3", "v3.0.2"]
+    )
+
+    alerts = []
+    pipeline._evaluate_container(container, lambda *a, **k: alerts.append(a))
+
+    assert scans == ["ghcr.io/immich-app/immich-server:v2.7.5"]  # no candidate scanned
+    with db_module.SessionLocal() as session:
+        decision = session.query(db_module.PendingDecision).order_by(db_module.PendingDecision.id.desc()).first()
+        assert decision.proposed_image is None  # a major bump is never the patch target
+        assert "No same-major upgrade exists" in decision.ai_analysis
+        assert "immich-server:v3.0.2" in decision.ai_analysis
 
 
 def test_resolve_decision_patch_pulls_the_proposed_image(monkeypatch):

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import requests
 
@@ -96,9 +97,65 @@ def pick_upgrade_candidate(current_tag: str, tags: list[str]) -> str | None:
     return best[1] if best else None
 
 
+def newest_release(current_tag: str, tags: list[str]) -> str | None:
+    """Newest same-flavor release regardless of major version.
+
+    For informing a human when no safe same-major bump exists (e.g. the
+    project abandoned the old major) — never something to auto-patch to.
+    Same prefix and suffix rules as pick_upgrade_candidate, which also keeps
+    prerelease suffixes like `-rc.3` out.
+    """
+    current = parse_version_tag(current_tag)
+    if current is None:
+        return None
+    best: tuple[tuple[int, ...], str] | None = None
+    for tag in tags:
+        parsed = parse_version_tag(tag)
+        if (
+            parsed is None
+            or parsed.prefix != current.prefix
+            or parsed.suffix != current.suffix
+            or parsed.numbers <= current.numbers
+        ):
+            continue
+        if best is None or parsed.numbers > best[0]:
+            best = (parsed.numbers, tag)
+    return best[1] if best else None
+
+
 def list_tags(ref: ImageRef, session: requests.Session | None = None) -> list[str]:
+    tags, _ = _capped_listing(session or requests.Session(), ref)
+    return tags
+
+
+def list_tags_for_upgrade(ref: ImageRef, session: requests.Session | None = None) -> list[str]:
+    """Tag listing tuned for finding something newer than `ref.tag`.
+
+    Mega-repositories (immich publishes a tag per commit) blow past the page
+    cap long before their release tags appear, because registries like GHCR
+    list tags in insertion order — newest last. When the plain listing comes
+    back truncated, a second listing seeded with `last=<current tag>` resumes
+    from the very tag the container is running, which in insertion order means
+    "everything published since this release". On lexically-ordered registries
+    the seeded slice is less complete, but those rarely truncate at all.
+    """
     session = session or requests.Session()
+    tags, truncated = _capped_listing(session, ref)
+    if truncated and ref.tag != "latest":
+        seeded, _ = _capped_listing(session, ref, last=ref.tag)
+        seen = set(tags)
+        tags += [tag for tag in seeded if tag not in seen]
+    return tags
+
+
+def _capped_listing(
+    session: requests.Session, ref: ImageRef, last: str | None = None
+) -> tuple[list[str], bool]:
+    """Up to _MAX_PAGES of tags (optionally resuming after `last`), plus
+    whether the registry still had more pages when we stopped."""
     url = f"https://{ref.registry}/v2/{ref.repository}/tags/list?n={_PAGE_SIZE}"
+    if last:
+        url += f"&last={quote(last)}"
     token: str | None = None
     tags: list[str] = []
     for _ in range(_MAX_PAGES):
@@ -112,9 +169,9 @@ def list_tags(ref: ImageRef, session: requests.Session | None = None) -> list[st
         tags.extend(response.json().get("tags") or [])
         next_url = response.links.get("next", {}).get("url")
         if not next_url:
-            break
+            return tags, False
         url = next_url if next_url.startswith("http") else f"https://{ref.registry}{next_url}"
-    return tags
+    return tags, True
 
 
 def _anonymous_pull_token(session: requests.Session, challenge: str, ref: ImageRef) -> str:

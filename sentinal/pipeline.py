@@ -116,9 +116,21 @@ def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None
         ref = registry.parse_image_ref(image)
         if registry.parse_version_tag(ref.tag) is None:
             return None, None
-        candidate_tag = registry.pick_upgrade_candidate(ref.tag, registry.list_tags(ref))
+        tags = registry.list_tags_for_upgrade(ref)
+        candidate_tag = registry.pick_upgrade_candidate(ref.tag, tags)
         if candidate_tag is None:
-            return None, None
+            newest_tag = registry.newest_release(ref.tag, tags)
+            if newest_tag is None:
+                return None, None
+            # A newer major exists but the old major line is over: too risky to
+            # one-click (migrations, breaking changes) yet too important to
+            # keep quiet about.
+            return None, (
+                f"**No same-major upgrade exists** for `{image}` — the project has moved on to "
+                f"`{image.rpartition(':')[0]}:{newest_tag}`. Major upgrades can require migration "
+                "steps; review the release notes and upgrade via CasaOS when ready. The patch "
+                "button below only re-pulls the current tag."
+            )
         candidate = f"{image.rpartition(':')[0]}:{candidate_tag}"
         candidate_findings = len(scanner.scan_image(candidate).vulnerabilities)
     except Exception as exc:
