@@ -3,8 +3,8 @@
 A self-hosted SOAR (Security Orchestration, Automation and Response) service
 for a home-lab Docker host: it scans running containers for known CVEs
 (Trivy), has Gemini explain the findings in plain language, and asks a human
-to approve, defer, or refuse remediation over Discord — logging every
-decision to Postgres for an audit trail.
+to approve, defer, or refuse remediation from a web console (with optional
+Discord notifications) — logging every decision to Postgres for an audit trail.
 
 This is the Python/Docker rewrite of **[Sentinal v1](https://github.com/NorwegianKiwi-glitch/Sentinal)**,
 which prototyped the same workflow in n8n. See [ARCHITECTURE.md](ARCHITECTURE.md)
@@ -13,20 +13,22 @@ for the full design, what changed from v1 and why, and known limitations.
 ## Requirements
 
 - Docker + Docker Compose
-- A Discord bot (token, guild ID, channel ID) — [discord.com/developers](https://discord.com/developers/applications)
 - A Google Gemini API key — [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+- *Optional:* a Discord bot (token, guild ID, channel ID) — [discord.com/developers](https://discord.com/developers/applications). Leave it unset to use the web console alone.
 
 ## Quickstart
 
 ```sh
 cp .env.example .env
-# edit .env: set POSTGRES_PASSWORD, DISCORD_*, GEMINI_API_KEY, FLASK_SECRET_KEY, DASHBOARD_*
+# edit .env: set POSTGRES_PASSWORD, GEMINI_API_KEY, FLASK_SECRET_KEY, DASHBOARD_*
+# (DISCORD_* are optional — set them to also mirror alerts into a channel)
 
 docker compose up --build
 ```
 
-The dashboard is then at `http://localhost:8080` (HTTP Basic Auth, using the
-`DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` you set).
+The console is then at `http://localhost:6767` (HTTP Basic Auth, using the
+`DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` you set), with **Decisions**,
+**Scan Log**, and **Exceptions** pages and a Run/Stop-scan control.
 
 ## Configuration
 

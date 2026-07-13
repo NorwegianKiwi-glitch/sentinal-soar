@@ -1,29 +1,37 @@
 # Architecture
 
-Sentinal is one Python process with three concurrent responsibilities: a Discord
-bot (asyncio), a Flask dashboard (WSGI, served by waitress), and the scan
-pipeline they both call into. It replaces [the original n8n prototype](https://github.com/NorwegianKiwi-glitch/Sentinal),
+Sentinal is one Python process with three concurrent responsibilities: a Flask
+web console (WSGI, served by waitress), an **optional** Discord bot (asyncio),
+and the scan pipeline they both call into. It replaces [the original n8n prototype](https://github.com/NorwegianKiwi-glitch/Sentinal),
 keeping the same behavior — scan running containers, explain findings with AI,
-ask a human to patch/snooze/refuse over Discord, log the outcome — as real,
-tested code instead of a workflow graph.
+ask a human to patch/snooze/refuse, log the outcome — as real, tested code
+instead of a workflow graph.
+
+The **web console is the primary UI**; Discord is a bolt-on notifier that
+mirrors the same alerts and decision buttons into a channel. Both call the same
+UI-agnostic `pipeline.resolve_decision`, and both are safe to use at once
+because a decision is claimed atomically (PENDING → IN_PROGRESS) before any
+work starts.
 
 ## Components
 
 ```
 sentinal/
-  config.py        env vars -> Settings (fails fast if a required var is missing)
+  config.py        env vars -> Settings; `discord_enabled` gates the optional bot
   db.py             SQLAlchemy models: ScanLog, ContainerException, PendingDecision
   docker_client.py  wraps docker-py against /var/run/docker.sock
   registry.py       Registry v2 API client: lists an image's tags, picks a safe upgrade
+  patching.py       describe_patch(): is a pull-based patch actionable, and if not, why
   definitions.py    keeps the CasaOS/compose file of a patched container in sync
   compose.py        confirm-gated major upgrades: rewrite the app's definition, compose up
-  scanner.py        shells out to a bundled trivy binary, parses JSON findings
+  backup.py         pre-upgrade restic snapshot via the host backup script
+  scanner.py        runs a killable trivy process, drops rejected/unpublished CVEs
   ai.py             Gemini wrapper (google-genai)
-  pipeline.py       enumerate -> governance check -> scan -> analyze -> log
-                      (pure-ish functions; called by Flask, the scheduler, and tests)
-  bot.py            discord.py bot + Button-based approval view
-  web/              Flask blueprint: dashboard, manual-scan trigger, archive/delete
-  __main__.py       wires bot + web + scheduler together in one process
+  pipeline.py       enumerate -> governance check -> scan -> analyze -> log; stoppable
+                      (pure-ish functions; called by web, the scheduler, and tests)
+  bot.py            optional discord.py bot + Button-based approval view
+  web/              Flask console: decisions / scan log / exceptions + scan control
+  __main__.py       wires web + scheduler (+ bot when configured) into one process
 ```
 
 `pipeline.py` is the direct translation of the n8n graph's node sequence, and is
@@ -32,12 +40,24 @@ around it.
 
 ### Process model
 
-Flask (WSGI) and discord.py (asyncio) don't share a runtime by default, so the
-bot's event loop is the backbone: it owns the main thread. `__main__.py` starts
-the Flask app (via `waitress`) and the scheduler loop each in their own daemon
-thread, then blocks on `bot.run()`. Code on either side of that boundary talks
-to the other via plain functions and `asyncio.run_coroutine_threadsafe` — see
-`bot.post_alert_threadsafe` and friends — rather than shared mutable state.
+`__main__.py` runs the scheduler in a daemon thread and then serves the web
+console. When Discord is configured, the bot owns the asyncio event loop on the
+main thread and the web server is the daemon instead; when it is not, the web
+server owns the main thread and the bot never starts. The scheduler and web
+layer call `bot.post_alert_threadsafe` and friends unconditionally — a shared
+`_dispatch` guard makes them no-ops when Discord is disabled — so the same scan
+path works with or without Discord. Decisions are written to the DB before any
+alert is posted, which is why the web console is fully functional alone.
+
+### Stopping a scan
+
+`run_scan_cycle` runs under module-level cancel/running flags. It checks the
+cancel flag between containers, and because a single container's evaluation can
+spend minutes pulling and scanning a candidate image or paging a huge tag list,
+the slow parts are cancellable too: `scanner.scan_image` runs Trivy as a
+killable subprocess that raises `ScanCancelled` when asked to stop, and
+`registry.list_tags_for_upgrade` takes a `should_continue` predicate. A Stop
+button in the console halts a live scan in seconds rather than waiting it out.
 
 ### Human-in-the-loop approval
 
@@ -45,15 +65,31 @@ n8n's `sendAndWait` suspends a workflow mid-execution and resumes it from a
 generated webhook when someone clicks a form button. There's no equivalent
 primitive in plain Python, so the same behavior is modeled explicitly:
 
-1. A vulnerable scan creates a `PendingDecision` row and posts a Discord
-   message with a `discord.ui.View` (persistent, `custom_id`-based buttons).
-2. A button click calls `pipeline.resolve_decision(decision_id, choice)` in a
-   worker thread (`asyncio.to_thread`, so it doesn't block the bot's event loop).
+1. A vulnerable scan creates a `PendingDecision` row. The web console lists it
+   at `/decisions`, and — if Discord is enabled — a `discord.ui.View`
+   (persistent, `custom_id`-based buttons) is also posted.
+2. A button (web or Discord) calls `pipeline.resolve_decision(decision_id,
+   choice)` in a worker thread. The call claims the decision atomically, so the
+   two UIs (and double-clicks) can't start duplicate remediations.
 3. On `on_ready` (including after a restart), any still-pending decision gets
-   its view re-registered — otherwise buttons on old messages would silently
-   stop working after a bot restart, which the n8n version had no equivalent
-   failure mode for (it never restarts mid-`sendAndWait`, since the entire
+   its Discord view re-registered — otherwise buttons on old messages would
+   silently stop working after a bot restart, which the n8n version had no
+   equivalent failure mode for (it never restarts mid-`sendAndWait`, since the
    suspended state lives in n8n's own execution store, not in your db).
+
+Which buttons appear is decided in one place, `patching.describe_patch`, used
+by both UIs: **Apply Patch** shows only when a pull could actually change what
+runs (a verified upgrade, or a moving tag); otherwise the alert states what to
+do instead (rebuild a digest-pinned image, use Major Upgrade, dump/restore a
+database, or Snooze/Refuse).
+
+### Which findings alert
+
+`scanner.scan_image` drops two classes of finding that would only be noise,
+because they don't describe a vulnerability that (yet) exists: CVEs marked
+**REJECTED** (withdrawn) and CVEs with **no PublishedDate** (an ID is reserved
+but no advisory is published). Everything else within the configured severity
+(`HIGH,CRITICAL` by default) still alerts.
 
 ### Version-bump proposals
 
