@@ -27,7 +27,13 @@ Each run of `/usr/local/bin/sentinal-backup.sh`:
    - `/var/lib/docker/volumes` — docker named volumes
    - `/DATA/Backups/db-dumps` — the SQL dumps from step 1
 3. **Applies retention**: keeps only the **last 3 snapshots**, pruning the
-   rest — bounded disk use on the single small SSD.
+   rest — bounded disk use on the single small SSD. Retention groups by
+   `paths`, not restic's default `host+paths`: each backup runs from a
+   container whose hostname changes on every rebuild, so the default grouping
+   treated every snapshot as its own "host" and never pruned. All runs
+   snapshot the same paths, so `--group-by paths` collapses them into one
+   group that keep-last-3 can trim. Because snapshots share data, a prune
+   often frees little immediately — the point is that the count stays bounded.
 
 Because restic deduplicates, a new snapshot of 42 GB only stores what
 actually changed since the previous one.
@@ -38,7 +44,8 @@ actually changed since the previous one.
 |---|---|
 | Restic repository (the backups) | `/DATA/Backups/restic-repo` |
 | Latest SQL dumps | `/DATA/Backups/db-dumps/` |
-| Backup script | `/usr/local/bin/sentinal-backup.sh` |
+| Backup script (running copy) | `/usr/local/bin/sentinal-backup.sh` on the Pi |
+| Backup script (canonical/source) | `scripts/sentinal-backup.sh` in this repo — edit here, then copy to the Pi path above |
 | Output of Sentinal-triggered runs | the upgrade's Discord/scan-log entry (snapshot id) and `docker logs sentinal-soar-app-1` |
 | Repository password | `/root/.config/sentinal-backup/password` |
 
