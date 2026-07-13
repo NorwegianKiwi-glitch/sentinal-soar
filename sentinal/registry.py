@@ -143,7 +143,9 @@ def list_tags(ref: ImageRef, session: requests.Session | None = None) -> list[st
     return tags
 
 
-def list_tags_for_upgrade(ref: ImageRef, session: requests.Session | None = None) -> list[str]:
+def list_tags_for_upgrade(
+    ref: ImageRef, session: requests.Session | None = None, should_continue=None
+) -> list[str]:
     """Tag listing tuned for finding something newer than `ref.tag`.
 
     Mega-repositories (immich publishes several tags per commit) blow past the
@@ -156,6 +158,10 @@ def list_tags_for_upgrade(ref: ImageRef, session: requests.Session | None = None
     slightly newer one right behind it isn't missed), bounded by
     _MAX_SEEK_PAGES. On lexically-ordered registries the seeded slice is less
     complete, but those rarely truncate at all.
+
+    The seeded pass can span dozens of HTTP requests, so `should_continue` (an
+    optional predicate checked after each page) lets a caller — e.g. a scan
+    being stopped — abandon it promptly with whatever it has gathered so far.
     """
     session = session or requests.Session()
     tags, truncated = _capped_listing(session, ref)
@@ -171,6 +177,8 @@ def list_tags_for_upgrade(ref: ImageRef, session: requests.Session | None = None
         if stop_after is None and current and any(_is_newer_same_flavor(tag, current) for tag in page):
             stop_after = page_index + _SEEK_GRACE_PAGES
         if (stop_after is not None and page_index >= stop_after) or page_index + 1 >= _MAX_SEEK_PAGES:
+            break
+        if should_continue is not None and not should_continue():
             break
     return tags
 

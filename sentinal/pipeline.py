@@ -25,12 +25,37 @@ class AlertSink(Protocol):
     ) -> None: ...
 
 
+# Scan control: a single global cycle at a time, stoppable between containers.
+_scan_cancel = threading.Event()
+_scan_running = threading.Event()
+
+
 def run_scan_cycle(post_alert: AlertSink) -> int:
     client = docker_client.get_client()
     containers = docker_client.list_containers(client)
-    for container in containers:
-        _evaluate_container(container, post_alert)
-    return len(containers)
+    _scan_cancel.clear()
+    _scan_running.set()
+    evaluated = 0
+    try:
+        for container in containers:
+            if _scan_cancel.is_set():
+                log.info("Scan stopped by request after %d/%d container(s)", evaluated, len(containers))
+                break
+            _evaluate_container(container, post_alert)
+            evaluated += 1
+    finally:
+        _scan_running.clear()
+    return evaluated
+
+
+def request_scan_stop() -> None:
+    """Ask an in-progress scan to stop. Cooperative: the current container's
+    Trivy run finishes first, then the loop halts before the next container."""
+    _scan_cancel.set()
+
+
+def scan_running() -> bool:
+    return _scan_running.is_set()
 
 
 def _evaluate_container(container, post_alert: AlertSink) -> None:
@@ -68,7 +93,10 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
             return
 
     try:
-        result = scanner.scan_image(image)
+        result = scanner.scan_image(image, cancel=_scan_cancel)
+    except scanner.ScanCancelled:
+        log.info("Scan stopped during %s", image)
+        return
     except Exception as exc:
         log.exception("Scan failed for %s", image)
         with db.SessionLocal() as session:
@@ -81,6 +109,12 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
             _write_log(session, image, db.ActionTaken.CLEAN, f"Scanned — no {severities} vulnerabilities found.")
         return
 
+    if _scan_cancel.is_set():
+        # Stop was requested during this container's Trivy scan; skip the slow
+        # AI + registry work and let the next scan re-evaluate it fresh.
+        log.info("Scan stopped before analysing %s", image)
+        return
+
     summary = result.summary_text()
     try:
         ai_text = ai.analyze(image, summary)
@@ -91,6 +125,10 @@ def _evaluate_container(container, post_alert: AlertSink) -> None:
     proposed_image, proposed_major_image, proposal_note = _propose_version_bump(image, len(result.vulnerabilities))
     if proposal_note:
         ai_text = f"{ai_text}\n\n{proposal_note}"
+
+    if _scan_cancel.is_set():
+        log.info("Scan stopped before alerting on %s", image)
+        return
 
     with db.SessionLocal() as session:
         decision = db.PendingDecision(
@@ -125,7 +163,7 @@ def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None
         ref = registry.parse_image_ref(image)
         if registry.parse_version_tag(ref.tag) is None:
             return None, None, None
-        tags = registry.list_tags_for_upgrade(ref)
+        tags = registry.list_tags_for_upgrade(ref, should_continue=lambda: not _scan_cancel.is_set())
         candidate_tag = registry.pick_upgrade_candidate(ref.tag, tags)
         if candidate_tag is None:
             newest_tag = registry.newest_release(ref.tag, tags)
@@ -152,7 +190,9 @@ def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None
                 "confirmation and re-applies the whole app), or upgrade via CasaOS."
             )
         candidate = f"{image.rpartition(':')[0]}:{candidate_tag}"
-        candidate_findings = len(scanner.scan_image(candidate).vulnerabilities)
+        candidate_findings = len(scanner.scan_image(candidate, cancel=_scan_cancel).vulnerabilities)
+    except scanner.ScanCancelled:
+        return None, None, None
     except Exception as exc:
         log.warning("Version-bump lookup failed for %s: %s", image, exc)
         return None, None, None

@@ -130,7 +130,7 @@ def test_evaluate_container_logs_clean_scan_with_no_findings(monkeypatch):
         name="nginx-container",
     )
     monkeypatch.setattr(
-        pipeline.scanner, "scan_image", lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[])
+        pipeline.scanner, "scan_image", lambda image, cancel=None: pipeline.scanner.ScanResult(image=image, vulnerabilities=[])
     )
 
     alerts = []
@@ -154,7 +154,7 @@ def test_evaluate_container_alerts_on_findings(monkeypatch):
     monkeypatch.setattr(
         pipeline.scanner,
         "scan_image",
-        lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
+        lambda image, cancel=None: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
     )
     monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
 
@@ -184,11 +184,11 @@ def test_evaluate_container_proposes_trivy_verified_upgrade(monkeypatch):
     monkeypatch.setattr(
         pipeline.scanner,
         "scan_image",
-        lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=findings_by_image[image]),
+        lambda image, cancel=None: pipeline.scanner.ScanResult(image=image, vulnerabilities=findings_by_image[image]),
     )
     monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
     monkeypatch.setattr(
-        pipeline.registry, "list_tags_for_upgrade", lambda ref: ["1.122.0", "1.123.0", "1.124.2", "latest"]
+        pipeline.registry, "list_tags_for_upgrade", lambda ref, should_continue=None: ["1.122.0", "1.123.0", "1.124.2", "latest"]
     )
 
     alerts = []
@@ -211,10 +211,12 @@ def test_evaluate_container_skips_proposal_when_candidate_is_not_better(monkeypa
     monkeypatch.setattr(
         pipeline.scanner,
         "scan_image",
-        lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
+        lambda image, cancel=None: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
     )
     monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
-    monkeypatch.setattr(pipeline.registry, "list_tags_for_upgrade", lambda ref: ["1.123.0", "1.124.2"])
+    monkeypatch.setattr(
+        pipeline.registry, "list_tags_for_upgrade", lambda ref, should_continue=None: ["1.123.0", "1.124.2"]
+    )
 
     pipeline._evaluate_container(container, lambda *a, **k: None)
 
@@ -234,13 +236,13 @@ def test_evaluate_container_never_offers_major_button_for_database_engines(monke
     monkeypatch.setattr(
         pipeline.scanner,
         "scan_image",
-        lambda image: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
+        lambda image, cancel=None: pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
     )
     monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
     monkeypatch.setattr(
         pipeline.registry,
         "list_tags_for_upgrade",
-        lambda ref: ["14-vectorchord0.3.0-pgvectors0.2.0", "16-vectorchord0.3.0-pgvectors0.2.0"],
+        lambda ref, should_continue=None: ["14-vectorchord0.3.0-pgvectors0.2.0", "16-vectorchord0.3.0-pgvectors0.2.0"],
     )
 
     pipeline._evaluate_container(container, lambda *a, **k: None)
@@ -374,6 +376,26 @@ def test_resolve_decision_major_without_target_is_rejected():
         assert session.get(db_module.PendingDecision, decision_id).status == "PENDING"
 
 
+def test_run_scan_cycle_stops_when_cancelled(monkeypatch):
+    containers = [SimpleNamespace(name=f"c{i}") for i in range(4)]
+    monkeypatch.setattr(pipeline.docker_client, "get_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(pipeline.docker_client, "list_containers", lambda client: containers)
+
+    evaluated = []
+
+    def fake_eval(container, sink):
+        evaluated.append(container.name)
+        pipeline.request_scan_stop()  # ask to stop after the first container
+
+    monkeypatch.setattr(pipeline, "_evaluate_container", fake_eval)
+
+    count = pipeline.run_scan_cycle(lambda *a, **k: None)
+
+    assert count == 1  # stopped before the second container
+    assert evaluated == ["c0"]
+    assert pipeline.scan_running() is False  # flag cleared even on early stop
+
+
 def test_evaluate_container_does_not_realert_while_decision_open(monkeypatch):
     with db_module.SessionLocal() as session:
         session.add(
@@ -391,7 +413,7 @@ def test_evaluate_container_does_not_realert_while_decision_open(monkeypatch):
         name="nginx-container",
     )
     scans, alerts = [], []
-    monkeypatch.setattr(pipeline.scanner, "scan_image", lambda image: scans.append(image))
+    monkeypatch.setattr(pipeline.scanner, "scan_image", lambda image, cancel=None: scans.append(image))
 
     pipeline._evaluate_container(container, lambda *a, **k: alerts.append(a))
 
@@ -492,12 +514,12 @@ def test_evaluate_container_mentions_newer_major_without_proposing_it(monkeypatc
     monkeypatch.setattr(
         pipeline.scanner,
         "scan_image",
-        lambda image: scans.append(image)
+        lambda image, cancel=None: scans.append(image)
         or pipeline.scanner.ScanResult(image=image, vulnerabilities=[vuln]),
     )
     monkeypatch.setattr(pipeline.ai, "analyze", lambda image, summary: "fake AI analysis")
     monkeypatch.setattr(
-        pipeline.registry, "list_tags_for_upgrade", lambda ref: ["v2.7.5", "v3.0.0-rc.3", "v3.0.2"]
+        pipeline.registry, "list_tags_for_upgrade", lambda ref, should_continue=None: ["v2.7.5", "v3.0.0-rc.3", "v3.0.2"]
     )
 
     alerts = []

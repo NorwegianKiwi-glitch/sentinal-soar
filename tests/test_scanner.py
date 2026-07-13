@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
-from unittest import mock
+import threading
+
+import pytest
 
 from sentinal import scanner
 
@@ -27,10 +28,6 @@ def test_is_hypothetical_flags_rejected_and_unpublished():
     assert scanner._is_hypothetical(_vuln("CVE-4")) is False
 
 
-def _fake_trivy(report):
-    return mock.Mock(stdout=json.dumps(report))
-
-
 def test_scan_image_filters_hypothetical(monkeypatch):
     report = {
         "Results": [
@@ -43,7 +40,7 @@ def test_scan_image_filters_hypothetical(monkeypatch):
             }
         ]
     }
-    monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: _fake_trivy(report))
+    monkeypatch.setattr(scanner, "_run_trivy", lambda image, cancel=None: report)
 
     result = scanner.scan_image("some/image:1.0")
 
@@ -54,17 +51,37 @@ def test_scan_image_filters_hypothetical(monkeypatch):
 def test_scan_image_all_hypothetical_means_clean(monkeypatch):
     report = {
         "Results": [
-            {
-                "Vulnerabilities": [
-                    _vuln("CVE-REJECT", desc="** REJECT **"),
-                    _vuln("CVE-RESERVED", published=None),
-                ]
-            }
+            {"Vulnerabilities": [_vuln("CVE-REJECT", desc="** REJECT **"), _vuln("CVE-RESERVED", published=None)]}
         ]
     }
-    monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: _fake_trivy(report))
+    monkeypatch.setattr(scanner, "_run_trivy", lambda image, cancel=None: report)
 
     result = scanner.scan_image("some/image:1.0")
 
     assert result.vulnerabilities == []
     assert result.has_findings is False
+
+
+class _NeverExitsProc:
+    """A Trivy process that keeps running until killed — models a slow scan."""
+
+    def __init__(self, *a, **k):
+        self.returncode = None
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        self.returncode = -9
+
+    def wait(self):
+        return self.returncode
+
+
+def test_scan_image_raises_scancancelled_when_cancel_is_set(monkeypatch):
+    monkeypatch.setattr(scanner.subprocess, "Popen", _NeverExitsProc)
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(scanner.ScanCancelled):
+        scanner.scan_image("some/image:1.0", cancel=cancel)

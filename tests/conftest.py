@@ -34,3 +34,16 @@ def _isolated_db(monkeypatch):
     monkeypatch.setattr(db_module, "engine", engine)
     monkeypatch.setattr(db_module, "SessionLocal", test_session)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_scan_state():
+    """The scan cancel/running flags are module-level (a real scan clears them
+    at the start of each cycle). Reset them per test so a cancellation test
+    can't leak a set flag into tests that call _evaluate_container directly.
+    """
+    from sentinal import pipeline
+
+    pipeline._scan_cancel.clear()
+    pipeline._scan_running.clear()
+    yield

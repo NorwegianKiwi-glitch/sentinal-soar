@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
+import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 
 from .config import get_settings
 
 log = logging.getLogger(__name__)
+
+_POLL_SECONDS = 1
+_TIMEOUT_SECONDS = 300
+
+
+class ScanCancelled(Exception):
+    """Raised when a scan is stopped mid-run; the Trivy process is killed so a
+    stopped scan does not have to wait out a multi-minute image pull + scan."""
 
 
 @dataclass
@@ -44,16 +56,8 @@ def _is_hypothetical(vuln: dict) -> bool:
     return description.startswith("REJECT") or "** REJECT" in description
 
 
-def scan_image(image: str) -> ScanResult:
-    settings = get_settings()
-    proc = subprocess.run(
-        ["trivy", "image", "--severity", settings.trivy_severity, "--format", "json", "--quiet", image],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=300,
-    )
-    report = json.loads(proc.stdout or "{}")
+def scan_image(image: str, cancel: threading.Event | None = None) -> ScanResult:
+    report = _run_trivy(image, cancel)
     all_vulns = [
         vuln
         for result in report.get("Results") or []
@@ -64,3 +68,34 @@ def scan_image(image: str) -> ScanResult:
     if suppressed:
         log.info("Suppressed %d rejected/unpublished CVE finding(s) for %s", suppressed, image)
     return ScanResult(image=image, vulnerabilities=vulnerabilities)
+
+
+def _run_trivy(image: str, cancel: threading.Event | None) -> dict:
+    """Run Trivy to a temp file (stdout can be megabytes — a pipe would risk a
+    buffer deadlock), polling so a set `cancel` kills the process promptly."""
+    settings = get_settings()
+    cmd = ["trivy", "image", "--severity", settings.trivy_severity, "--format", "json", "--quiet", image]
+    out_fd, out_path = tempfile.mkstemp(suffix=".json")
+    try:
+        with os.fdopen(out_fd, "w") as out_file:
+            proc = subprocess.Popen(cmd, stdout=out_file, stderr=subprocess.DEVNULL, text=True)
+            deadline = time.monotonic() + _TIMEOUT_SECONDS
+            while proc.poll() is None:
+                if cancel is not None and cancel.is_set():
+                    proc.kill()
+                    proc.wait()
+                    raise ScanCancelled(image)
+                if time.monotonic() > deadline:
+                    proc.kill()
+                    proc.wait()
+                    raise subprocess.TimeoutExpired(cmd, _TIMEOUT_SECONDS)
+                time.sleep(_POLL_SECONDS)
+            if proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, cmd)
+        with open(out_path) as result_file:
+            return json.loads(result_file.read() or "{}")
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
