@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Decisions{% endblock %}
+{% block content %}
+<h2>Pending decisions</h2>
+{% if not items %}
+  <p class="muted">Nothing awaiting a decision. Run a scan to check your containers.</p>
+{% endif %}
+{% for item in items %}
+{% set d = item.d %}
+{% set patch = item.patch %}
+<article class="card" data-decision="{{ d.id }}">
+  <div style="display:flex; gap:.5rem; align-items:baseline; flex-wrap:wrap;">
+    <strong>{{ d.image_name }}</strong>
+    <span class="muted">({{ d.container_name }})</span>
+    <span class="muted" style="margin-left:auto;">#{{ d.id }}</span>
+  </div>
+  {% if d.ai_analysis %}<div style="margin:.6rem 0; white-space:pre-wrap; font-size:.9rem;">{{ d.ai_analysis }}</div>{% endif %}
+  <details style="margin:.4rem 0;">
+    <summary class="muted" style="cursor:pointer; font-size:.8rem;">CVE list</summary>
+    <pre style="font-size:.78rem; color:GrayText;">{{ d.summary }}</pre>
+  </details>
+  {% if not patch.can_patch %}<p class="muted" style="font-size:.82rem;"><em>No pull-based patch: {{ patch.advice }}</em></p>{% endif %}
+  <div class="status muted" style="font-size:.85rem; min-height:1.2em;"></div>
+  <div style="display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.5rem;">
+    {% if patch.can_patch %}<button class="btn" onclick="act({{ d.id }}, 'patch')">Apply Patch</button>{% endif %}
+    {% if d.proposed_major_image %}<a class="btn stop" href="{{ url_for('dashboard.major_confirm', decision_id=d.id) }}">Major Upgrade…</a>{% endif %}
+    <button class="row-btn" onclick="act({{ d.id }}, 'snooze')">Snooze (7d)</button>
+    <button class="row-btn" onclick="act({{ d.id }}, 'refuse')">Refuse</button>
+  </div>
+</article>
+{% endfor %}
+{% endblock %}
+{% block scripts %}
+<script>
+async function act(id, choice) {
+  const card = document.querySelector(`[data-decision="${id}"]`);
+  card.querySelectorAll('button').forEach(b => b.disabled = true);
+  card.querySelector('.status').textContent = '⏳ working…';
+  await fetch(`/api/decisions/${id}/${choice}`, { method: 'POST' });
+  poll(id);
+}
+async function poll(id) {
+  const card = document.querySelector(`[data-decision="${id}"]`);
+  if (!card) return;
+  try {
+    const d = await (await fetch(`/api/decisions/${id}`)).json();
+    if (d.status === 'RESOLVED') {
+      card.querySelector('.status').textContent = '✓ ' + (d.details || 'done');
+      card.style.opacity = .6;
+      return;
+    }
+    card.querySelector('.status').textContent =
+      d.status === 'IN_PROGRESS' ? '⏳ working… (pulling images can take minutes on the Pi)' : '';
+  } catch (e) {}
+  setTimeout(() => poll(id), 2000);
+}
+</script>
+{% endblock %}

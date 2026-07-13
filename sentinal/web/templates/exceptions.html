@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Exceptions{% endblock %}
+{% block content %}
+<h2>Active exceptions</h2>
+<p class="muted" style="font-size:.85rem;">Snoozed images resurface for review after the snooze; refused images after the re-attestation date.</p>
+<div style="overflow-x:auto;">
+<table>
+  <thead><tr><th>Image</th><th>Status</th><th>Snooze until</th><th>Review after</th><th></th></tr></thead>
+  <tbody>
+  {% for exc in exceptions %}
+    <tr data-row="{{ exc.id }}">
+      <td>{{ exc.image_name }}</td>
+      <td><span class="badge {{ exc.status }}">{{ exc.status }}</span></td>
+      <td>{{ exc.snooze_until.strftime("%Y-%m-%d") if exc.snooze_until else "—" }}</td>
+      <td>{{ exc.review_after.strftime("%Y-%m-%d") if exc.review_after else "—" }}</td>
+      <td><button class="row-btn" onclick="del({{ exc.id }})">Delete</button></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No active snoozes or refusals.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function del(id) {
+  await fetch(`/api/exceptions/${id}/delete`, { method: 'POST' });
+  document.querySelector(`[data-row="${id}"]`).remove();
+}
+</script>
+{% endblock %}

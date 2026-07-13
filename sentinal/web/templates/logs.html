@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Scan Log{% endblock %}
+{% block content %}
+<h2>Scan log</h2>
+<form method="get" style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:end; margin-bottom:1rem;">
+  <label>Image<br><input type="text" name="image" value="{{ filters.image }}" placeholder="substring"></label>
+  <label>Action<br>
+    <select name="action">
+      <option value="">any</option>
+      {% for a in actions %}<option value="{{ a }}" {{ 'selected' if filters.action == a }}>{{ a }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>From<br><input type="date" name="date_from" value="{{ filters.date_from }}"></label>
+  <label>To<br><input type="date" name="date_to" value="{{ filters.date_to }}"></label>
+  <label>ID<br><input type="text" name="id" value="{{ filters.id }}" style="width:5rem;"></label>
+  <button class="btn" type="submit">Filter</button>
+  <a class="row-btn" href="{{ url_for('dashboard.logs') }}">Clear</a>
+</form>
+<div style="overflow-x:auto;">
+<table>
+  <thead><tr><th>ID</th><th>Image</th><th>Time (UTC)</th><th>Action</th><th>Details</th><th></th></tr></thead>
+  <tbody>
+  {% for log in logs %}
+    <tr data-row="{{ log.id }}">
+      <td>{{ log.id }}</td>
+      <td>{{ log.image_name }}</td>
+      <td>{{ log.scan_time.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td><span class="badge {{ log.action_taken }}">{{ log.action_taken }}</span></td>
+      <td style="max-width:44ch; overflow-wrap:anywhere; font-size:.78rem; color:GrayText;">{{ log.log_payload.get("details", "") }}</td>
+      <td><button class="row-btn" onclick="archive({{ log.id }})">Archive</button></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">No matching log entries.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function archive(id) {
+  await fetch(`/api/logs/${id}/archive`, { method: 'POST' });
+  document.querySelector(`[data-row="${id}"]`).remove();
+}
+</script>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Major Upgrade{% endblock %}
+{% block content %}
+<h2>Major upgrade</h2>
+{% if error %}
+  <p><span class="badge FAILED">Cannot prepare</span></p>
+  <p class="muted">{{ error }}</p>
+  <p><a class="row-btn" href="{{ url_for('dashboard.decisions') }}">← Back to decisions</a></p>
+{% else %}
+<article class="card" style="max-width:640px;">
+  <p>Upgrade app <strong>{{ project }}</strong> to <strong>{{ target }}</strong>?</p>
+  <p class="muted" style="font-size:.85rem;">This rewrites the app's compose definition and re-applies it. These images move together:</p>
+  <ul style="font-size:.85rem;">{% for ref in family %}<li><code>{{ ref }}</code></li>{% endfor %}</ul>
+  {% if companions %}
+  <p class="muted" style="font-size:.82rem;">⚠️ Pinned companions left untouched — majors sometimes need these updated too; check the release notes:</p>
+  <ul style="font-size:.82rem;">{% for c in companions %}<li><code>{{ c }}</code></li>{% endfor %}</ul>
+  {% endif %}
+  <p style="font-size:.82rem;">A fresh backup snapshot is taken automatically first; if the backup fails, the upgrade is not attempted. Data migrations usually run forward-only — be sure you have backups.</p>
+  <div class="status muted" style="min-height:1.2em; font-size:.85rem;"></div>
+  <div style="display:flex; gap:.5rem; margin-top:.6rem;">
+    <button class="btn stop" id="confirm-btn" onclick="runMajor({{ decision_id }})">Yes, run the major upgrade</button>
+    <a class="row-btn" href="{{ url_for('dashboard.decisions') }}">Cancel</a>
+  </div>
+</article>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+async function runMajor(id) {
+  document.getElementById('confirm-btn').disabled = true;
+  document.querySelector('.status').textContent = '⏳ backing up and upgrading… (several minutes)';
+  await fetch(`/api/decisions/${id}/major`, { method: 'POST' });
+  poll(id);
+}
+async function poll(id) {
+  try {
+    const d = await (await fetch(`/api/decisions/${id}`)).json();
+    if (d.status === 'RESOLVED') { document.querySelector('.status').textContent = '✓ ' + (d.details || 'done'); return; }
+  } catch (e) {}
+  setTimeout(() => poll(id), 3000);
+}
+</script>
+{% endblock %}
