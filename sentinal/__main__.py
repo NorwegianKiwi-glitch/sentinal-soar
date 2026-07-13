@@ -43,9 +43,15 @@ def _run_scheduler() -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     init_db()
-    threading.Thread(target=_run_web, daemon=True, name="web").start()
     threading.Thread(target=_run_scheduler, daemon=True, name="scheduler").start()
-    bot_module.run_bot()  # blocks here; owns the asyncio event loop on the main thread
+    if get_settings().discord_enabled:
+        # The bot owns the asyncio event loop on the main thread; web is a daemon.
+        threading.Thread(target=_run_web, daemon=True, name="web").start()
+        bot_module.run_bot()  # blocks here
+    else:
+        # No Discord: the web console is the only UI, so it owns the main thread.
+        log.info("Discord not configured — running web-only; the dashboard is the console.")
+        _run_web()  # blocks here
 
 
 if __name__ == "__main__":

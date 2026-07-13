@@ -33,15 +33,21 @@ class Settings:
     dashboard_username: str
     dashboard_password: str
 
+    @property
+    def discord_enabled(self) -> bool:
+        """Discord is an optional notifier — configured only when both a bot
+        token and a channel are set. When off, the web console is the sole UI."""
+        return bool(self.discord_bot_token and self.discord_channel_id)
+
 
 @lru_cache
 def get_settings() -> Settings:
     load_dotenv()
     return Settings(
         database_url=_env("DATABASE_URL", required=True),
-        discord_bot_token=_env("DISCORD_BOT_TOKEN", required=True),
-        discord_guild_id=int(_env("DISCORD_GUILD_ID", required=True)),
-        discord_channel_id=int(_env("DISCORD_CHANNEL_ID", required=True)),
+        discord_bot_token=_env("DISCORD_BOT_TOKEN"),
+        discord_guild_id=int(_env("DISCORD_GUILD_ID", "0") or "0"),
+        discord_channel_id=int(_env("DISCORD_CHANNEL_ID", "0") or "0"),
         gemini_api_key=_env("GEMINI_API_KEY", required=True),
         gemini_model=_env("GEMINI_MODEL", "gemini-2.5-flash"),
         docker_socket=_env("DOCKER_SOCKET", "unix://var/run/docker.sock"),

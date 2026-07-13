@@ -236,6 +236,16 @@ async def set_scanning_presence(active: bool) -> None:
     await bot.change_presence(activity=SCANNING_ACTIVITY if active else IDLE_ACTIVITY)
 
 
+def _dispatch(make_coro) -> None:
+    """Schedule a bot coroutine from a worker thread, or no-op when Discord is
+    disabled — then the bot never started, bot.loop does not exist, and the web
+    console is the only UI. The scheduler and web layer call these
+    unconditionally, so the guard lives here."""
+    if not get_settings().discord_enabled:
+        return
+    asyncio.run_coroutine_threadsafe(make_coro(), bot.loop)
+
+
 def post_alert_threadsafe(
     decision_id: int,
     image: str,
@@ -244,26 +254,25 @@ def post_alert_threadsafe(
     proposed_image: str | None = None,
     proposed_major_image: str | None = None,
 ) -> None:
-    asyncio.run_coroutine_threadsafe(
-        post_alert(decision_id, image, container_name, ai_text, proposed_image, proposed_major_image),
-        bot.loop,
+    _dispatch(
+        lambda: post_alert(decision_id, image, container_name, ai_text, proposed_image, proposed_major_image)
     )
 
 
 def post_scan_started_threadsafe() -> None:
-    asyncio.run_coroutine_threadsafe(post_scan_started(), bot.loop)
+    _dispatch(post_scan_started)
 
 
 def post_scan_complete_threadsafe(count: int) -> None:
-    asyncio.run_coroutine_threadsafe(post_scan_complete(count), bot.loop)
+    _dispatch(lambda: post_scan_complete(count))
 
 
 def post_error_threadsafe(source: str, message: str) -> None:
-    asyncio.run_coroutine_threadsafe(post_error(source, message), bot.loop)
+    _dispatch(lambda: post_error(source, message))
 
 
 def set_scanning_presence_threadsafe(active: bool) -> None:
-    asyncio.run_coroutine_threadsafe(set_scanning_presence(active), bot.loop)
+    _dispatch(lambda: set_scanning_presence(active))
 
 
 @bot.event
