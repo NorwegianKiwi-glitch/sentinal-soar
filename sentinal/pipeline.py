@@ -7,7 +7,7 @@ from typing import Protocol
 
 from sqlalchemy import select, update
 
-from . import ai, backup, compose, db, definitions, docker_client, registry, scanner
+from . import ai, backup, compose, db, definitions, docker_client, patching, registry, scanner
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -132,7 +132,7 @@ def _propose_version_bump(image: str, current_findings: int) -> tuple[str | None
             if newest_tag is None:
                 return None, None, None
             major = f"{image.rpartition(':')[0]}:{newest_tag}"
-            if _is_database_image(ref.repository):
+            if patching.is_database_image(ref.repository):
                 # A pg14 data dir cannot be opened by a pg16 binary: swapping a
                 # database engine's image across majors can only crash it, so
                 # this never becomes a button.
@@ -245,13 +245,6 @@ def resolve_decision(decision_id: int, choice: str) -> dict:
 # One remediation at a time: every approval pulls an image, and concurrent
 # multi-hundred-MB pulls can IO-starve a Pi until SSH and the dashboard freeze.
 _remediation_lock = threading.Lock()
-
-_DATABASE_REPOS = ("postgres", "mariadb", "mysql", "mongo")
-
-
-def _is_database_image(repository: str) -> bool:
-    name = repository.rsplit("/", 1)[-1]
-    return any(engine in name for engine in _DATABASE_REPOS)
 
 
 def _apply_patch(target_image: str, current_image: str, container_name: str) -> tuple[db.ActionTaken, bool, str]:

@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 from sqlalchemy import select
 
-from . import db, pipeline
+from . import db, patching, pipeline
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -56,16 +56,25 @@ class DecisionView(discord.ui.View):
     view happened to be registered last.
     """
 
-    def __init__(self, decision_id: int, major_target: str | None = None):
+    def __init__(
+        self,
+        decision_id: int,
+        image: str = "",
+        proposed_image: str | None = None,
+        proposed_major_image: str | None = None,
+    ):
         super().__init__(timeout=None)
         self.decision_id = decision_id
-        self.major_target = major_target
-        self._add_button(
-            "Apply Patch (pull + recreate)", discord.ButtonStyle.success, f"sentinal:patch:{decision_id}", self._patch
-        )
+        self.major_target = proposed_major_image
+        # Only offer Apply Patch when a pull could actually change what runs;
+        # otherwise _alert_content states what to do instead.
+        if patching.describe_patch(image, proposed_image, proposed_major_image).can_patch:
+            self._add_button(
+                "Apply Patch (pull + recreate)", discord.ButtonStyle.success, f"sentinal:patch:{decision_id}", self._patch
+            )
         self._add_button("Snooze (7 Days)", discord.ButtonStyle.secondary, f"sentinal:snooze:{decision_id}", self._snooze)
         self._add_button("Refuse", discord.ButtonStyle.danger, f"sentinal:refuse:{decision_id}", self._refuse)
-        if major_target:
+        if proposed_major_image:
             self._add_button(
                 "Major Upgrade…", discord.ButtonStyle.danger, f"sentinal:major:{decision_id}", self._major
             )
@@ -149,7 +158,7 @@ class ConfirmMajorView(discord.ui.View):
             return
         await interaction.response.edit_message(
             content=_alert_content(image, container_name, ai_text, proposed, major),
-            view=DecisionView(self.decision_id, major),
+            view=DecisionView(self.decision_id, image, proposed, major),
         )
 
 
@@ -168,29 +177,27 @@ def _alert_content(
     proposed_image: str | None = None,
     proposed_major_image: str | None = None,
 ) -> str:
+    patch = patching.describe_patch(image, proposed_image, proposed_major_image)
     header = f"**Security Alert: {image}**\n({container_name})\n\n"
-    if proposed_image:
-        footer = (
-            "\n\n---\n"
-            f"**Apply Patch** will pull `{proposed_image}` and recreate `{container_name}` "
-            f"from it, replacing `{image}` (your data/volumes are untouched). The proposed "
-            "tag was Trivy-scanned before being suggested. If you'd rather stay on the "
-            "current version, use Snooze or Refuse."
+    parts = ["\n\n---"]
+    if patch.can_patch and patch.target and patch.target != image:
+        parts.append(
+            f"**Apply Patch** pulls `{patch.target}` and recreates `{container_name}` from it "
+            "(your data/volumes are untouched)."
+        )
+    elif patch.can_patch:
+        parts.append(
+            f"**Apply Patch** re-pulls `{image}` and recreates `{container_name}` "
+            "(your data/volumes are untouched)."
         )
     else:
-        footer = (
-            "\n\n---\n"
-            f"**Apply Patch** always does the same thing: re-pull `{image}` and recreate "
-            f"`{container_name}` from it (your data/volumes are untouched). It does **not** "
-            "selectively implement any one of the fixes suggested above — if the analysis "
-            "recommends something else (a different image/tag, a manual package change, etc.), "
-            "this button won't do that; use Refuse or Snooze and handle it by hand instead."
+        parts.append(f"**No pull-based patch:** {patch.advice}")
+    if proposed_major_image:
+        parts.append(
+            f"**Major Upgrade** moves the whole app to `{proposed_major_image}` after a confirmation step."
         )
-        if proposed_major_image:
-            footer += (
-                f"\n**Major Upgrade** moves the whole app to `{proposed_major_image}` after an "
-                "explicit confirmation step."
-            )
+    parts.append("Otherwise use **Snooze** or **Refuse**.")
+    footer = "\n".join(parts)
     budget = 2000 - len(header) - len(footer)
     return f"{header}{ai_text[:budget]}{footer}"
 
@@ -206,7 +213,7 @@ async def post_alert(
     channel = await _get_channel()
     await channel.send(
         _alert_content(image, container_name, ai_text, proposed_image, proposed_major_image),
-        view=DecisionView(decision_id, proposed_major_image),
+        view=DecisionView(decision_id, image, proposed_image, proposed_major_image),
     )
 
 
@@ -278,7 +285,14 @@ async def on_ready() -> None:
             decision.status = db.DecisionStatus.PENDING.value
         session.commit()
         for decision in pending:
-            bot.add_view(DecisionView(decision.id, decision.proposed_major_image))
+            bot.add_view(
+                DecisionView(
+                    decision.id,
+                    decision.image_name,
+                    decision.proposed_image,
+                    decision.proposed_major_image,
+                )
+            )
             if decision.proposed_major_image:
                 bot.add_view(ConfirmMajorView(decision.id))
     log.info("Re-registered %d pending decision(s)", len(pending))
