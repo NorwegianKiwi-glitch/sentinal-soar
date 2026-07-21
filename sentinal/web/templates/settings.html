@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h2>Scan schedule</h2>
+<article class="card" style="max-width:560px;">
+  <label style="display:flex; align-items:center; gap:.6rem; margin-bottom:1rem;">
+    <input type="checkbox" id="enabled" {{ 'checked' if cfg.enabled }}>
+    <span><strong>Periodic scans</strong> — automatically scan all containers on a schedule</span>
+  </label>
+
+  <fieldset style="border:1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius:8px; padding:.8rem 1rem; margin:0 0 1rem;">
+    <legend class="muted" style="font-size:.8rem;">When</legend>
+    <label style="display:flex; align-items:center; gap:.5rem; margin-bottom:.5rem;">
+      <input type="radio" name="mode" value="interval" {{ 'checked' if cfg.mode != 'daily' }}>
+      Every
+      <input type="number" id="interval_hours" min="1" max="720" value="{{ cfg.interval_hours }}" style="width:5rem;">
+      hours
+    </label>
+    <label style="display:flex; align-items:center; gap:.5rem;">
+      <input type="radio" name="mode" value="daily" {{ 'checked' if cfg.mode == 'daily' }}>
+      Daily at
+      <input type="time" id="daily_time" value="{{ cfg.daily_time }}">
+      <span class="muted">({{ tz }})</span>
+    </label>
+  </fieldset>
+
+  <div style="display:flex; align-items:center; gap:1rem;">
+    <button class="btn" id="save">Save</button>
+    <span id="save-status" class="muted" style="font-size:.85rem;"></span>
+  </div>
+
+  <p class="muted" style="font-size:.85rem; margin-top:1rem;">
+    Next scan: <span id="next-run" data-iso="{{ (next_run.isoformat() + 'Z') if next_run else '' }}">…</span><br>
+    Last periodic scan:
+    {{ cfg.last_run_at.strftime('%Y-%m-%d %H:%M') + ' UTC' if cfg.last_run_at else 'never' }}
+  </p>
+</article>
+{% endblock %}
+{% block scripts %}
+<script>
+function fmtNext(iso) {
+  if (!iso) return 'disabled (periodic scans are off)';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+const nextEl = document.getElementById('next-run');
+nextEl.textContent = fmtNext(nextEl.dataset.iso || null);
+
+document.getElementById('save').onclick = async () => {
+  const btn = document.getElementById('save');
+  const status = document.getElementById('save-status');
+  btn.disabled = true;
+  status.textContent = 'saving…';
+  const payload = {
+    enabled: document.getElementById('enabled').checked,
+    mode: document.querySelector('input[name="mode"]:checked').value,
+    interval_hours: document.getElementById('interval_hours').value,
+    daily_time: document.getElementById('daily_time').value,
+  };
+  try {
+    const res = await fetch('/api/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    nextEl.textContent = fmtNext(data.next_run);
+    status.textContent = 'Saved ✓';
+  } catch (e) {
+    status.textContent = 'Save failed';
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  }
+};
+</script>
+{% endblock %}

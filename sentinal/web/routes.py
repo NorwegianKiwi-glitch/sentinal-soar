@@ -8,7 +8,7 @@ import threading
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
-from .. import db, patching, pipeline
+from .. import db, patching, pipeline, schedule
 from ..config import get_settings
 
 log = logging.getLogger(__name__)
@@ -90,6 +90,15 @@ def exceptions():
             select(db.ContainerException).order_by(db.ContainerException.updated_at.desc())
         ).all()
     return render_template("exceptions.html", exceptions=rows, active="exceptions")
+
+
+@bp.get("/settings")
+def settings_page():
+    cfg = schedule.get()
+    tz = dt.datetime.now().astimezone().tzname() or "local"
+    return render_template(
+        "settings.html", cfg=cfg, next_run=schedule.next_run_at(cfg), tz=tz, active="settings"
+    )
 
 
 @bp.get("/decisions/<int:decision_id>/major")
@@ -187,6 +196,34 @@ def scan_status():
     return jsonify({"running": pipeline.scan_running()})
 
 
+@bp.post("/api/schedule")
+def update_schedule():
+    data = request.get_json(silent=True) or request.form
+    enabled = str(data.get("enabled", "")).lower() in ("true", "1", "on", "yes")
+    mode = data.get("mode") if data.get("mode") in ("interval", "daily") else "interval"
+    try:
+        interval_hours = int(data.get("interval_hours") or 24)
+    except (TypeError, ValueError):
+        interval_hours = 24
+    interval_hours = max(1, min(interval_hours, 24 * 30))
+    daily_time = (data.get("daily_time") or "03:00").strip()
+    if not _valid_hhmm(daily_time):
+        daily_time = "03:00"
+    cfg = schedule.update(
+        enabled=enabled, mode=mode, interval_hours=interval_hours, daily_time=daily_time
+    )
+    next_run = schedule.next_run_at(cfg)
+    return jsonify(
+        {
+            "enabled": cfg.enabled,
+            "mode": cfg.mode,
+            "interval_hours": cfg.interval_hours,
+            "daily_time": cfg.daily_time,
+            "next_run": next_run.isoformat() + "Z" if next_run else None,
+        }
+    )
+
+
 # --- log / exception mutations ---------------------------------------------
 
 
@@ -211,6 +248,14 @@ def delete_exception(exception_id: int):
         session.delete(exception)
         session.commit()
     return jsonify({"status": "deleted"})
+
+
+def _valid_hhmm(value: str) -> bool:
+    try:
+        hour, minute = (int(part) for part in value.split(":"))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= hour <= 23 and 0 <= minute <= 59
 
 
 def _parse_date(value: str) -> dt.datetime | None:

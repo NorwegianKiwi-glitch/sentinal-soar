@@ -40,13 +40,14 @@
     @media (max-width: 640px) { header, main { padding-left: 1rem; padding-right: 1rem; } .scan-control { margin-left: 0; } }
   </style>
 </head>
-<body>
+<body data-page="{{ active }}">
   <header>
     <h1>🛡 Sentinal</h1>
     <nav>
       <a href="{{ url_for('dashboard.decisions') }}" class="{{ 'active' if active == 'decisions' }}">Decisions</a>
       <a href="{{ url_for('dashboard.logs') }}" class="{{ 'active' if active == 'logs' }}">Scan Log</a>
       <a href="{{ url_for('dashboard.exceptions') }}" class="{{ 'active' if active == 'exceptions' }}">Exceptions</a>
+      <a href="{{ url_for('dashboard.settings_page') }}" class="{{ 'active' if active == 'settings' }}">Settings</a>
     </nav>
     <div class="scan-control">
       <span id="scan-state" class="muted"></span>
@@ -66,7 +67,9 @@
         scanRun.style.display = d.running ? 'none' : '';
         scanStop.style.display = d.running ? '' : 'none';
         scanState.textContent = d.running ? 'scanning…' : '';
-        if (wasRunning && !d.running) { location.reload(); }
+        // Refresh to show new results when a scan finishes — but never on the
+        // settings page, where it would discard unsaved edits.
+        if (wasRunning && !d.running && document.body.dataset.page !== 'settings') { location.reload(); }
         wasRunning = d.running;
       } catch (e) {}
     }

@@ -91,6 +91,17 @@ because they don't describe a vulnerability that (yet) exists: CVEs marked
 but no advisory is published). Everything else within the configured severity
 (`HIGH,CRITICAL` by default) still alerts.
 
+### Scan schedule
+
+Periodic scanning is configured in a single-row `scan_schedule` table, editable
+from the console's **Settings** page — no restart or env change needed.
+`schedule.run_scheduler` loops on a `threading.Event` (rather than a long
+`sleep`) so a toggle or re-time takes effect immediately. Two modes: **every N
+hours** (next = last run + N) and **daily at HH:MM** in the server's local
+timezone (the container mounts `/etc/localtime`; stored timestamps stay UTC).
+The row is seeded from `SCAN_INTERVAL_HOURS` on first boot, then
+DB-authoritative. A manual scan already running defers the tick.
+
 ### Version-bump proposals
 
 Re-pulling the tag a container already runs only fixes anything when the tag

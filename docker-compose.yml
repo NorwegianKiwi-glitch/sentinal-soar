@@ -34,6 +34,10 @@ services:
       - /DATA/AppData:/DATA/AppData:ro
       - /DATA/Backups:/DATA/Backups
       - /var/lib/docker/volumes:/var/lib/docker/volumes:ro
+      # Use the host's timezone so a "daily at HH:MM" scan means the Pi's local
+      # time, not UTC (all stored timestamps stay UTC regardless).
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
     depends_on:
       db:
         condition: service_healthy

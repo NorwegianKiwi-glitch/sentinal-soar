@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 
 from waitress import serve
 
 from . import bot as bot_module
-from . import pipeline
+from . import pipeline, schedule
 from .config import get_settings
 from .db import init_db
 from .web import create_app
@@ -21,23 +20,22 @@ def _run_web() -> None:
     serve(app, host=settings.web_host, port=settings.web_port)
 
 
+def _scheduled_scan() -> None:
+    bot_module.post_scan_started_threadsafe()
+    bot_module.set_scanning_presence_threadsafe(True)
+    try:
+        count = pipeline.run_scan_cycle(bot_module.post_alert_threadsafe)
+        bot_module.post_scan_complete_threadsafe(count)
+    except Exception as exc:
+        bot_module.post_error_threadsafe("scheduled scan", str(exc))
+    finally:
+        bot_module.set_scanning_presence_threadsafe(False)
+
+
 def _run_scheduler() -> None:
-    settings = get_settings()
-    if settings.scan_interval_hours <= 0:
-        log.info("Scheduled scanning disabled (SCAN_INTERVAL_HOURS=0)")
-        return
-    while True:
-        time.sleep(settings.scan_interval_hours * 3600)
-        bot_module.post_scan_started_threadsafe()
-        bot_module.set_scanning_presence_threadsafe(True)
-        try:
-            count = pipeline.run_scan_cycle(bot_module.post_alert_threadsafe)
-            bot_module.post_scan_complete_threadsafe(count)
-        except Exception as exc:
-            log.exception("Scheduled scan failed")
-            bot_module.post_error_threadsafe("scheduled scan", str(exc))
-        finally:
-            bot_module.set_scanning_presence_threadsafe(False)
+    # Timing lives in schedule.run_scheduler (DB-backed, runtime-editable); this
+    # just supplies the work to run when a tick is due.
+    schedule.run_scheduler(_scheduled_scan)
 
 
 def main() -> None:

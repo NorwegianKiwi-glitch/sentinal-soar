@@ -81,6 +81,24 @@ class PendingDecision(Base):
     resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class ScanSchedule(Base):
+    """Single row (id=1) holding the periodic-scan config the web console edits.
+    Seeded from SCAN_INTERVAL_HOURS on first boot, then DB-authoritative so the
+    schedule survives restarts and can change without one."""
+
+    __tablename__ = "scan_schedule"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+    mode: Mapped[str] = mapped_column(String(20), default="interval")  # "interval" | "daily"
+    interval_hours: Mapped[int] = mapped_column(default=24)
+    daily_time: Mapped[str] = mapped_column(String(5), default="03:00")  # "HH:MM", server-local
+    last_run_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow
+    )
+
+
 engine = create_engine(get_settings().database_url, future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 

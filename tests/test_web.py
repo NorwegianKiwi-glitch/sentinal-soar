@@ -126,3 +126,32 @@ def test_archive_log_is_soft_delete_not_hard_delete():
 
 def test_delete_exception_requires_auth():
     assert _client().post("/api/exceptions/1/delete").status_code == 401
+
+
+def test_settings_page_renders():
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "Scan schedule" in body
+    assert "Periodic scans" in body
+
+
+def test_update_schedule_persists():
+    from sentinal import schedule
+
+    response = _client().post(
+        "/api/schedule",
+        headers=_auth_header(),
+        json={"enabled": True, "mode": "daily", "interval_hours": 8, "daily_time": "05:00"},
+    )
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["mode"] == "daily" and data["daily_time"] == "05:00"
+    assert schedule.get().mode == "daily"
+
+
+def test_update_schedule_rejects_bad_time_and_falls_back():
+    response = _client().post(
+        "/api/schedule",
+        headers=_auth_header(),
+        json={"enabled": True, "mode": "daily", "interval_hours": 8, "daily_time": "99:99"},
+    )
+    assert response.get_json()["daily_time"] == "03:00"

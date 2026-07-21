@@ -39,7 +39,7 @@ for the full list with defaults. Notable ones:
 |---|---|---|
 | `SNOOZE_DAYS` | `7` | How long a "Snooze" decision defers re-scanning an image |
 | `REFUSE_REVIEW_DAYS` | `180` | How long a "Refuse" decision holds before it needs re-attestation |
-| `SCAN_INTERVAL_HOURS` | `24` | How often the background scheduler runs a full scan cycle; `0` disables it |
+| `SCAN_INTERVAL_HOURS` | `24` | Initial periodic-scan interval; after first boot the schedule (on/off, every-N-hours or daily-at-time) is edited from the console's **Settings** page |
 | `TRIVY_SEVERITY` | `HIGH,CRITICAL` | Severity floor passed to Trivy |
 | `DOCKER_SOCKET` | `unix://var/run/docker.sock` | Where the app reaches the Docker daemon it's managing |
 
