@@ -5,7 +5,7 @@ import logging
 import threading
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .. import container_selection, credentials, db, docker_client, notifications, patching, pipeline, schedule
 from ..config import get_settings
@@ -79,31 +79,71 @@ def logs():
 
 @bp.get("/access")
 def access_page():
+    """Traffic table plus two "where is it coming from" summaries (top source
+    IPs, top countries) computed over the same filtered set — not just the
+    500-row page shown in the table, so a filter narrows the summaries too."""
     filters = {key: (request.args.get(key) or "").strip() for key in ("hostname", "ip", "path", "date_from", "date_to")}
     only_flagged = request.args.get("flagged") == "1"
-    stmt = select(db.AccessEvent)
+    conditions = []
     if filters["hostname"]:
-        stmt = stmt.where(db.AccessEvent.hostname.ilike(f"%{filters['hostname']}%"))
+        conditions.append(db.AccessEvent.hostname.ilike(f"%{filters['hostname']}%"))
     if filters["ip"]:
-        stmt = stmt.where(db.AccessEvent.client_ip.ilike(f"%{filters['ip']}%"))
+        conditions.append(db.AccessEvent.client_ip.ilike(f"%{filters['ip']}%"))
     if filters["path"]:
-        stmt = stmt.where(db.AccessEvent.path.ilike(f"%{filters['path']}%"))
+        conditions.append(db.AccessEvent.path.ilike(f"%{filters['path']}%"))
     if only_flagged:
-        stmt = stmt.where(db.AccessEvent.flagged.is_(True))
+        conditions.append(db.AccessEvent.flagged.is_(True))
     date_from = _parse_date(filters["date_from"])
     if date_from:
-        stmt = stmt.where(db.AccessEvent.window_start >= date_from)
+        conditions.append(db.AccessEvent.window_start >= date_from)
     date_to = _parse_date(filters["date_to"])
     if date_to:
-        stmt = stmt.where(db.AccessEvent.window_start < date_to + dt.timedelta(days=1))
+        conditions.append(db.AccessEvent.window_start < date_to + dt.timedelta(days=1))
+
     with db.SessionLocal() as session:
-        rows = session.scalars(stmt.order_by(db.AccessEvent.window_start.desc()).limit(500)).all()
+        rows = session.scalars(
+            select(db.AccessEvent).where(*conditions).order_by(db.AccessEvent.window_start.desc()).limit(500)
+        ).all()
+        total_requests = session.scalar(
+            select(func.coalesce(func.sum(db.AccessEvent.request_count), 0)).where(*conditions)
+        )
+        unique_ip_count = session.scalar(select(func.count(func.distinct(db.AccessEvent.client_ip))).where(*conditions))
+        flagged_count = session.scalar(
+            select(func.count()).select_from(db.AccessEvent).where(*conditions, db.AccessEvent.flagged.is_(True))
+        )
+        top_ips = session.execute(
+            select(
+                db.AccessEvent.client_ip,
+                func.max(db.AccessEvent.country).label("country"),
+                func.sum(db.AccessEvent.request_count).label("requests"),
+                func.max(db.AccessEvent.flagged).label("flagged"),
+            )
+            .where(*conditions)
+            .group_by(db.AccessEvent.client_ip)
+            .order_by(func.sum(db.AccessEvent.request_count).desc())
+            .limit(8)
+        ).all()
+        top_countries = session.execute(
+            select(db.AccessEvent.country, func.sum(db.AccessEvent.request_count).label("requests"))
+            .where(*conditions, db.AccessEvent.country != "")
+            .group_by(db.AccessEvent.country)
+            .order_by(func.sum(db.AccessEvent.request_count).desc())
+            .limit(8)
+        ).all()
+
     return render_template(
         "access.html",
         events=rows,
         filters=filters,
         only_flagged=only_flagged,
         cloudflare_enabled=get_settings().cloudflare_enabled,
+        total_requests=total_requests,
+        unique_ip_count=unique_ip_count,
+        flagged_count=flagged_count,
+        top_ips=top_ips,
+        top_countries=top_countries,
+        max_ip_requests=max((r.requests for r in top_ips), default=0),
+        max_country_requests=max((r.requests for r in top_countries), default=0),
         active="access",
     )
 

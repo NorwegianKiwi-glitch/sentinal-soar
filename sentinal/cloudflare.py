@@ -40,6 +40,7 @@ query AccessTraffic($zoneTag: String!, $since: Time!, $until: Time!, $hostnames:
         count
         dimensions {
           clientIP
+          clientCountryName
           clientRequestHTTPHost
           clientRequestPath
           edgeResponseStatus
@@ -56,6 +57,7 @@ query AccessTraffic($zoneTag: String!, $since: Time!, $until: Time!, $hostnames:
 class TrafficGroup:
     hostname: str
     client_ip: str
+    country: str
     path: str
     status_code: int
     request_count: int
@@ -121,6 +123,7 @@ def _parse_groups(payload: dict) -> list[TrafficGroup]:
                 TrafficGroup(
                     hostname=dims.get("clientRequestHTTPHost") or "",
                     client_ip=dims.get("clientIP") or "",
+                    country=dims.get("clientCountryName") or "",
                     path=dims.get("clientRequestPath") or "",
                     status_code=status_code,
                     request_count=request_count,

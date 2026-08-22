@@ -102,6 +102,7 @@ def _store(groups: list[cloudflare.TrafficGroup]) -> int:
                 db.AccessEvent(
                     hostname=g.hostname,
                     client_ip=g.client_ip,
+                    country=g.country,
                     path=g.path,
                     status_code=g.status_code,
                     request_count=g.request_count,

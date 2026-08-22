@@ -170,6 +170,7 @@ class AccessEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     hostname: Mapped[str] = mapped_column(String(255), nullable=False)
     client_ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    country: Mapped[str] = mapped_column(String(64), default="")
     path: Mapped[str] = mapped_column(String(512), nullable=False)
     status_code: Mapped[int] = mapped_column(nullable=False)
     request_count: Mapped[int] = mapped_column(nullable=False)

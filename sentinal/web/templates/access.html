@@ -1,12 +1,71 @@
 {% extends "base.html" %}
 {% block title %}Access{% endblock %}
 {% block content %}
+<style>
+  .stat-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .stat-card { flex: 1; min-width: 9rem; }
+  .stat-card .stat-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: GrayText; }
+  .stat-card .stat-value { font-size: 1.7rem; font-weight: 700; margin-top: .15rem; }
+  .stat-card.alert .stat-value { color: #e0587a; }
+  .origin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+  @media (max-width: 720px) { .origin-grid { grid-template-columns: 1fr; } }
+  .origin-grid h3 { margin: 0 0 .6rem; font-size: .85rem; text-transform: uppercase; letter-spacing: .04em; color: GrayText; }
+  .bar-row { display: flex; align-items: center; gap: .5rem; margin: .35rem 0; font-size: .82rem; }
+  .bar-label { width: 9.5rem; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-track { flex: 1; background: color-mix(in srgb, CanvasText 10%, transparent); border-radius: 4px; height: .75rem; overflow: hidden; }
+  .bar-fill { height: 100%; background: #1c7a82; }
+  .bar-fill.flagged { background: #b0334a; }
+  .bar-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+</style>
 <h2>Access traffic</h2>
 {% if not cloudflare_enabled %}
 <p class="muted">Cloudflare access ingestion isn't configured — set CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID, and CLOUDFLARE_HOSTNAMES to see edge traffic here.</p>
 {% else %}
 <p class="muted">Edge traffic to your watched hostnames via Cloudflare — real client IPs, not what each app's own log records today. "Flagged" means volume or repeated-failure activity against a login-shaped path, not a confirmed failed login: Cloudflare can't see inside an app's response.</p>
 {% endif %}
+
+<div class="stat-row">
+  <div class="card stat-card">
+    <div class="stat-label">Requests</div>
+    <div class="stat-value">{{ total_requests }}</div>
+  </div>
+  <div class="card stat-card">
+    <div class="stat-label">Unique source IPs</div>
+    <div class="stat-value">{{ unique_ip_count }}</div>
+  </div>
+  <div class="card stat-card{{ ' alert' if flagged_count }}">
+    <div class="stat-label">Flagged</div>
+    <div class="stat-value">{{ flagged_count }}</div>
+  </div>
+</div>
+
+<div class="origin-grid">
+  <div class="card">
+    <h3>Top source IPs</h3>
+    {% for ip in top_ips %}
+    <div class="bar-row">
+      <span class="bar-label" title="{{ ip.client_ip }}{% if ip.country %} ({{ ip.country }}){% endif %}">{{ ip.client_ip }}{% if ip.country %} <span class="muted">· {{ ip.country }}</span>{% endif %}</span>
+      <div class="bar-track"><div class="bar-fill{{ ' flagged' if ip.flagged else '' }}" style="width: {{ ((ip.requests / max_ip_requests * 100) if max_ip_requests else 0)|round(1) }}%"></div></div>
+      <span class="bar-value">{{ ip.requests }}</span>
+    </div>
+    {% else %}
+    <p class="muted">No traffic yet.</p>
+    {% endfor %}
+  </div>
+  <div class="card">
+    <h3>Top countries</h3>
+    {% for c in top_countries %}
+    <div class="bar-row">
+      <span class="bar-label">{{ c.country }}</span>
+      <div class="bar-track"><div class="bar-fill" style="width: {{ ((c.requests / max_country_requests * 100) if max_country_requests else 0)|round(1) }}%"></div></div>
+      <span class="bar-value">{{ c.requests }}</span>
+    </div>
+    {% else %}
+    <p class="muted">No traffic yet.</p>
+    {% endfor %}
+  </div>
+</div>
+
 <form method="get" style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:end; margin-bottom:1rem;">
   <label>Hostname<br><input type="text" name="hostname" value="{{ filters.hostname }}" placeholder="substring"></label>
   <label>Client IP<br><input type="text" name="ip" value="{{ filters.ip }}" placeholder="substring"></label>
@@ -19,20 +78,21 @@
 </form>
 <div style="overflow-x:auto;">
 <table>
-  <thead><tr><th>Time (UTC)</th><th>Hostname</th><th>Client IP</th><th>Path</th><th>Status</th><th>Requests</th><th></th></tr></thead>
+  <thead><tr><th>Time (UTC)</th><th>Hostname</th><th>Client IP</th><th>Country</th><th>Path</th><th>Status</th><th>Requests</th><th></th></tr></thead>
   <tbody>
   {% for e in events %}
     <tr>
       <td>{{ e.window_start.strftime("%Y-%m-%d %H:%M") }}</td>
       <td>{{ e.hostname }}</td>
       <td>{{ e.client_ip }}</td>
-      <td style="max-width:32ch; overflow-wrap:anywhere; font-size:.78rem;">{{ e.path }}</td>
+      <td>{{ e.country }}</td>
+      <td style="max-width:28ch; overflow-wrap:anywhere; font-size:.78rem;">{{ e.path }}</td>
       <td>{{ e.status_code }}</td>
       <td>{{ e.request_count }}</td>
       <td>{% if e.flagged %}<span class="badge FAILED">flagged</span>{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="7" class="muted">No access events{{ " yet — the poller ingests every few minutes." if cloudflare_enabled else "." }}</td></tr>
+    <tr><td colspan="8" class="muted">No access events{{ " yet — the poller ingests every few minutes." if cloudflare_enabled else "." }}</td></tr>
   {% endfor %}
   </tbody>
 </table>

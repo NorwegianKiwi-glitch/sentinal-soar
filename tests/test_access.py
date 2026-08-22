@@ -11,6 +11,7 @@ def _group(**kw):
     defaults = dict(
         hostname="nextcloud.example.com",
         client_ip="203.0.113.5",
+        country="US",
         path="/login",
         status_code=401,
         request_count=1,

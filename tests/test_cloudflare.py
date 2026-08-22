@@ -27,13 +27,14 @@ def _payload(groups):
                                 "count": count,
                                 "dimensions": {
                                     "clientIP": ip,
+                                    "clientCountryName": country,
                                     "clientRequestHTTPHost": host,
                                     "clientRequestPath": path,
                                     "edgeResponseStatus": status,
                                     "datetimeMinute": minute,
                                 },
                             }
-                            for (ip, host, path, status, minute, count) in groups
+                            for (ip, country, host, path, status, minute, count) in groups
                         ]
                     }
                 ]
@@ -46,7 +47,7 @@ def test_fetch_traffic_parses_groups():
     session = mock.Mock()
     session.post.return_value = _response(
         json_body=_payload(
-            [("203.0.113.5", "nextcloud.example.com", "/login", 401, "2026-08-22T10:00:00Z", 6)]
+            [("203.0.113.5", "United States", "nextcloud.example.com", "/login", 401, "2026-08-22T10:00:00Z", 6)]
         )
     )
 
@@ -63,6 +64,7 @@ def test_fetch_traffic_parses_groups():
         cloudflare.TrafficGroup(
             hostname="nextcloud.example.com",
             client_ip="203.0.113.5",
+            country="United States",
             path="/login",
             status_code=401,
             request_count=6,
@@ -112,12 +114,12 @@ def test_fetch_traffic_returns_empty_on_graphql_errors():
 
 def test_fetch_traffic_skips_rows_with_unparseable_fields():
     session = mock.Mock()
-    good = ("203.0.113.5", "example.com", "/login", 401, "2026-08-22T10:00:00Z", 3)
+    good = ("203.0.113.5", "US", "example.com", "/login", 401, "2026-08-22T10:00:00Z", 3)
     session.post.return_value = _response(
         json_body=_payload(
             [
                 good,
-                ("203.0.113.6", "example.com", "/x", "not-a-status", "2026-08-22T10:01:00Z", 1),
+                ("203.0.113.6", "US", "example.com", "/x", "not-a-status", "2026-08-22T10:01:00Z", 1),
             ]
         )
     )
