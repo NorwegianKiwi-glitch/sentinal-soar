@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 from sqlalchemy import select
 
-from . import db, patching, pipeline
+from . import db, notifications, patching, pipeline
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -240,8 +240,12 @@ def _dispatch(make_coro) -> None:
     """Schedule a bot coroutine from a worker thread, or no-op when Discord is
     disabled — then the bot never started, bot.loop does not exist, and the web
     console is the only UI. The scheduler and web layer call these
-    unconditionally, so the guard lives here."""
+    unconditionally, so the guard lives here. Also no-ops while the Settings
+    page's notification toggle is off, without touching the connection
+    itself (button clicks on already-posted messages still work)."""
     if not get_settings().discord_enabled:
+        return
+    if not notifications.enabled():
         return
     asyncio.run_coroutine_threadsafe(make_coro(), bot.loop)
 

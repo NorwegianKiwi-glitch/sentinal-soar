@@ -37,6 +37,19 @@ def _isolated_db(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _stub_docker_containers(monkeypatch):
+    """The Settings page lists live containers via docker_client.list_containers
+    at request time; stub it so web tests are hermetic and don't depend on a
+    real Docker daemon being reachable. Tests that care about specific
+    containers monkeypatch this again themselves, which simply overrides it.
+    """
+    from sentinal import docker_client
+
+    monkeypatch.setattr(docker_client, "list_containers", lambda *a, **k: [])
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_scan_state():
     """The scan cancel/running flags are module-level (a real scan clears them
     at the start of each cycle). Reset them per test so a cancellation test

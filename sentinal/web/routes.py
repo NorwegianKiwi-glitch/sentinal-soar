@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
-import hmac
 import logging
 import threading
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import select
 
-from .. import db, patching, pipeline, schedule
+from .. import container_selection, credentials, db, docker_client, notifications, patching, pipeline, schedule
 from ..config import get_settings
 
 log = logging.getLogger(__name__)
@@ -20,13 +19,8 @@ _RESOLUTION_CHOICES = {"patch", "snooze", "refuse", "major"}
 
 @bp.before_request
 def _require_auth():
-    settings = get_settings()
     auth = request.authorization
-    valid = bool(
-        auth
-        and hmac.compare_digest(auth.username or "", settings.dashboard_username)
-        and hmac.compare_digest(auth.password or "", settings.dashboard_password)
-    )
+    valid = bool(auth and credentials.verify(auth.username or "", auth.password or ""))
     if not valid:
         return Response(
             "Authentication required", 401, {"WWW-Authenticate": 'Basic realm="Sentinal"'}
@@ -96,8 +90,19 @@ def exceptions():
 def settings_page():
     cfg = schedule.get()
     tz = dt.datetime.now().astimezone().tzname() or "local"
+    creds = credentials.get()
+    containers, containers_error = _list_containers_for_settings()
     return render_template(
-        "settings.html", cfg=cfg, next_run=schedule.next_run_at(cfg), tz=tz, active="settings"
+        "settings.html",
+        cfg=cfg,
+        next_run=schedule.next_run_at(cfg),
+        tz=tz,
+        username=creds.username,
+        containers=containers,
+        containers_error=containers_error,
+        discord_connected=get_settings().discord_enabled,
+        discord_notifications_enabled=notifications.enabled(),
+        active="settings",
     )
 
 
@@ -224,6 +229,46 @@ def update_schedule():
     )
 
 
+@bp.post("/api/scan-selection")
+def update_scan_selection():
+    data = request.get_json(silent=True)
+    if data is not None:
+        excluded = data.get("excluded")
+    else:
+        excluded = request.form.getlist("excluded")
+    if not isinstance(excluded, list) or not all(isinstance(n, str) for n in excluded):
+        return jsonify({"error": "excluded must be a list of container names"}), 400
+    saved = container_selection.set_excluded(excluded)
+    return jsonify({"excluded": sorted(saved)})
+
+
+@bp.post("/api/notifications/discord")
+def toggle_discord_notifications():
+    if not get_settings().discord_enabled:
+        return jsonify({"error": "Discord is not connected"}), 400
+    data = request.get_json(silent=True) or request.form
+    value = data.get("enabled")
+    if isinstance(value, str):
+        value = value.lower() in ("true", "1", "on", "yes")
+    if not isinstance(value, bool):
+        return jsonify({"error": "enabled must be a boolean"}), 400
+    return jsonify({"enabled": notifications.set_enabled(value)})
+
+
+@bp.post("/api/credentials")
+def update_credentials():
+    data = request.get_json(silent=True) or request.form
+    try:
+        creds = credentials.update(
+            current_password=data.get("current_password", ""),
+            new_username=data.get("username", ""),
+            new_password=(data.get("new_password") or None),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"username": creds.username})
+
+
 # --- log / exception mutations ---------------------------------------------
 
 
@@ -248,6 +293,27 @@ def delete_exception(exception_id: int):
         session.delete(exception)
         session.commit()
     return jsonify({"status": "deleted"})
+
+
+def _list_containers_for_settings() -> tuple[list[dict], str | None]:
+    excluded = container_selection.excluded_names()
+    try:
+        raw = docker_client.list_containers()
+    except Exception as exc:
+        log.warning("Listing containers for Settings failed: %s", exc)
+        return [], str(exc)
+    containers = sorted(
+        (
+            {
+                "name": c.name,
+                "image": c.image.tags[0] if c.image.tags else c.image.id,
+                "included": c.name not in excluded,
+            }
+            for c in raw
+        ),
+        key=lambda c: c["name"],
+    )
+    return containers, None
 
 
 def _valid_hhmm(value: str) -> bool:

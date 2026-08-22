@@ -1,5 +1,6 @@
 import base64
 import threading
+from types import SimpleNamespace
 
 from sentinal import db as db_module
 from sentinal import pipeline
@@ -155,3 +156,154 @@ def test_update_schedule_rejects_bad_time_and_falls_back():
         json={"enabled": True, "mode": "daily", "interval_hours": 8, "daily_time": "99:99"},
     )
     assert response.get_json()["daily_time"] == "03:00"
+
+
+def test_settings_page_shows_current_username():
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "Login credentials" in body
+    assert 'value="test-user"' in body
+
+
+def test_update_credentials_requires_current_password():
+    response = _client().post(
+        "/api/credentials",
+        headers=_auth_header(),
+        json={"username": "test-user", "current_password": "wrong", "new_password": None},
+    )
+    assert response.status_code == 400
+    assert "incorrect" in response.get_json()["error"].lower()
+
+
+def test_update_credentials_changes_login_and_old_creds_stop_working():
+    client = _client()
+    response = client.post(
+        "/api/credentials",
+        headers=_auth_header(),
+        json={"username": "new-admin", "current_password": "test-pass", "new_password": "new-secret"},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["username"] == "new-admin"
+
+    # old Basic-Auth credentials are now rejected
+    assert client.get("/decisions", headers=_auth_header()).status_code == 401
+    # new ones work
+    new_auth = _auth_header(username="new-admin", password="new-secret")
+    assert client.get("/decisions", headers=new_auth).status_code == 200
+
+
+def test_update_credentials_rejects_blank_username():
+    response = _client().post(
+        "/api/credentials",
+        headers=_auth_header(),
+        json={"username": "   ", "current_password": "test-pass", "new_password": None},
+    )
+    assert response.status_code == 400
+
+
+def _fake_container(name, image_tag):
+    container = SimpleNamespace()
+    container.name = name
+    container.image = SimpleNamespace(tags=[image_tag] if image_tag else [], id="sha256:" + "a" * 64)
+    return container
+
+
+def test_settings_page_lists_containers_checked_by_default(monkeypatch):
+    from sentinal import docker_client
+
+    monkeypatch.setattr(
+        docker_client,
+        "list_containers",
+        lambda *a, **k: [_fake_container("redis", "redis:6.2.6"), _fake_container("nginx", "nginx:latest")],
+    )
+
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+
+    assert "Containers scanned" in body
+    assert "redis" in body and "nginx" in body
+    redis_line = next(line for line in body.splitlines() if 'value="redis"' in line)
+    assert "checked" in redis_line
+
+
+def test_settings_page_unchecks_excluded_containers(monkeypatch):
+    from sentinal import container_selection, docker_client
+
+    monkeypatch.setattr(docker_client, "list_containers", lambda *a, **k: [_fake_container("redis", "redis:6.2.6")])
+    container_selection.set_excluded(["redis"])
+
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+
+    redis_line = next(line for line in body.splitlines() if 'value="redis"' in line)
+    assert "checked" not in redis_line
+
+
+def test_settings_page_handles_docker_error_gracefully(monkeypatch):
+    from sentinal import docker_client
+
+    def _boom(*a, **k):
+        raise RuntimeError("docker socket unavailable")
+
+    monkeypatch.setattr(docker_client, "list_containers", _boom)
+
+    response = _client().get("/settings", headers=_auth_header())
+    assert response.status_code == 200
+    assert b"Couldn't list containers" in response.data
+
+
+def test_update_scan_selection_persists():
+    from sentinal import container_selection
+
+    response = _client().post(
+        "/api/scan-selection", headers=_auth_header(), json={"excluded": ["redis", "nginx"]}
+    )
+    assert response.status_code == 200
+    assert set(response.get_json()["excluded"]) == {"redis", "nginx"}
+    assert container_selection.excluded_names() == {"redis", "nginx"}
+
+
+def test_update_scan_selection_rejects_non_list():
+    response = _client().post("/api/scan-selection", headers=_auth_header(), json={"excluded": "redis"})
+    assert response.status_code == 400
+
+
+def test_settings_page_shows_discord_toggle_when_connected():
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "Discord notifications" in body
+    assert "Disable Discord notifications" in body  # enabled by default
+
+
+def test_settings_page_hides_toggle_when_discord_not_connected(monkeypatch):
+    from sentinal.web import routes
+
+    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(discord_enabled=False))
+
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "isn't connected" in body
+    assert 'id="discord-toggle"' not in body  # button itself isn't rendered (JS still references the id, guarded)
+
+
+def test_toggle_discord_notifications_flips_state():
+    from sentinal import notifications
+
+    client = _client()
+    response = client.post("/api/notifications/discord", headers=_auth_header(), json={"enabled": False})
+    assert response.status_code == 200
+    assert response.get_json() == {"enabled": False}
+    assert notifications.enabled() is False
+
+    response = client.post("/api/notifications/discord", headers=_auth_header(), json={"enabled": True})
+    assert response.get_json() == {"enabled": True}
+    assert notifications.enabled() is True
+
+
+def test_toggle_discord_notifications_rejects_non_boolean():
+    response = _client().post("/api/notifications/discord", headers=_auth_header(), json={"enabled": None})
+    assert response.status_code == 400
+
+
+def test_toggle_discord_notifications_requires_connection(monkeypatch):
+    from sentinal.web import routes
+
+    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(discord_enabled=False))
+
+    response = _client().post("/api/notifications/discord", headers=_auth_header(), json={"enabled": False})
+    assert response.status_code == 400

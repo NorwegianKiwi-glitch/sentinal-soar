@@ -7,7 +7,7 @@ from typing import Protocol
 
 from sqlalchemy import select, update
 
-from . import ai, backup, compose, db, definitions, docker_client, patching, registry, scanner
+from . import ai, backup, compose, container_selection, db, definitions, docker_client, patching, registry, scanner
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,9 @@ _scan_running = threading.Event()
 def run_scan_cycle(post_alert: AlertSink) -> int:
     client = docker_client.get_client()
     containers = docker_client.list_containers(client)
+    excluded = container_selection.excluded_names()
+    if excluded:
+        containers = [c for c in containers if c.name not in excluded]
     _scan_cancel.clear()
     _scan_running.set()
     evaluated = 0

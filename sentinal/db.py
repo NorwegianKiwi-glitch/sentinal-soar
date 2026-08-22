@@ -99,6 +99,55 @@ class ScanSchedule(Base):
     )
 
 
+class NotificationSettings(Base):
+    """Single row (id=1): runtime mute switch for Discord notifications.
+
+    Independent of whether Discord is connected at all (DISCORD_BOT_TOKEN /
+    DISCORD_CHANNEL_ID — see config.Settings.discord_enabled, decided at
+    boot). This toggles on top of an already-connected bot, so flipping it
+    off silences alerts without dropping the connection, and flipping it
+    back on takes effect immediately — see notifications.py."""
+
+    __tablename__ = "notification_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    discord_enabled: Mapped[bool] = mapped_column(default=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow
+    )
+
+
+class ExcludedContainer(Base):
+    """A container name deselected from scans — see container_selection.py.
+
+    Opt-out by design: absence from this table means "scanned," so a
+    container that shows up on the host after this feature ships is covered
+    by default, matching the scan-everything behavior from before it existed.
+    """
+
+    __tablename__ = "excluded_containers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    container_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class DashboardCredentials(Base):
+    """Single row (id=1) holding the web console's login username/password hash.
+    Seeded from DASHBOARD_USERNAME/DASHBOARD_PASSWORD on first boot, then
+    DB-authoritative — a change from Settings takes effect immediately and
+    survives restarts without editing .env."""
+
+    __tablename__ = "dashboard_credentials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow
+    )
+
+
 engine = create_engine(get_settings().database_url, future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 

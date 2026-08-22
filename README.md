@@ -26,9 +26,21 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The console is then at `http://localhost:6767` (HTTP Basic Auth, using the
-`DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` you set), with **Decisions**,
+The console is then at `http://localhost:6767` (HTTP Basic Auth, seeded from
+the `DASHBOARD_USERNAME` / `DASHBOARD_PASSWORD` you set), with **Decisions**,
 **Scan Log**, and **Exceptions** pages and a Run/Stop-scan control.
+
+A **Settings** page rounds it out, entirely editable at runtime with no
+restart needed:
+
+- **Scan schedule** — on/off, every-N-hours or daily-at-time.
+- **Containers scanned** — deselect any container to skip it on both manual
+  and scheduled scans; everything else stays covered by default.
+- **Discord notifications** — a single button mutes/unmutes alerts, scan
+  start/complete pings, and error posts without dropping the bot connection.
+- **Login credentials** — change the dashboard's username and/or password
+  (current password required); `DASHBOARD_USERNAME`/`DASHBOARD_PASSWORD`
+  only seed the very first boot after that.
 
 ## Configuration
 

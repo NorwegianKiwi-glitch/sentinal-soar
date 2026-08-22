@@ -396,6 +396,23 @@ def test_run_scan_cycle_stops_when_cancelled(monkeypatch):
     assert pipeline.scan_running() is False  # flag cleared even on early stop
 
 
+def test_run_scan_cycle_skips_excluded_containers(monkeypatch):
+    from sentinal import container_selection
+
+    containers = [SimpleNamespace(name=f"c{i}") for i in range(4)]
+    monkeypatch.setattr(pipeline.docker_client, "get_client", lambda: SimpleNamespace())
+    monkeypatch.setattr(pipeline.docker_client, "list_containers", lambda client: containers)
+    container_selection.set_excluded(["c1", "c3"])
+
+    evaluated = []
+    monkeypatch.setattr(pipeline, "_evaluate_container", lambda container, sink: evaluated.append(container.name))
+
+    count = pipeline.run_scan_cycle(lambda *a, **k: None)
+
+    assert count == 2
+    assert evaluated == ["c0", "c2"]
+
+
 def test_evaluate_container_does_not_realert_while_decision_open(monkeypatch):
     with db_module.SessionLocal() as session:
         session.add(

@@ -35,6 +35,89 @@
     {{ cfg.last_run_at.strftime('%Y-%m-%d %H:%M') + ' UTC' if cfg.last_run_at else 'never' }}
   </p>
 </article>
+
+<h2>Containers scanned</h2>
+<article class="card" style="max-width:560px;">
+  {% if containers_error %}
+    <p class="muted">Couldn't list containers: {{ containers_error }}</p>
+  {% elif not containers %}
+    <p class="muted">No containers found on this host.</p>
+  {% else %}
+    <p class="muted" style="font-size:.85rem; margin-top:0;">
+      Unchecked containers are skipped by both manual and scheduled scans.
+    </p>
+    <div style="max-height:320px; overflow-y:auto; margin-bottom:1rem;">
+      {% for c in containers %}
+        <label style="display:flex; align-items:center; gap:.6rem; padding:.3rem 0;">
+          <input type="checkbox" class="container-toggle" value="{{ c.name }}" {{ 'checked' if c.included }}>
+          <span>
+            <strong>{{ c.name }}</strong>
+            <span class="muted" style="font-size:.8rem;"> — {{ c.image }}</span>
+          </span>
+        </label>
+      {% endfor %}
+    </div>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="btn" id="containers-save">Save</button>
+      <span id="containers-save-status" class="muted" style="font-size:.85rem;"></span>
+    </div>
+  {% endif %}
+</article>
+
+<h2>Discord notifications</h2>
+<article class="card" style="max-width:560px;">
+  {% if not discord_connected %}
+    <p class="muted">
+      Discord isn't connected — set <code>DISCORD_BOT_TOKEN</code>, <code>DISCORD_GUILD_ID</code>
+      and <code>DISCORD_CHANNEL_ID</code> to send alerts there.
+    </p>
+  {% else %}
+    <p style="margin-top:0;">
+      Status: <strong id="discord-status-label">{{ 'Enabled' if discord_notifications_enabled else 'Disabled' }}</strong>
+      <span class="muted" style="font-size:.85rem;">
+        — alerts, scan start/complete pings, and error posts to Discord. The bot stays connected
+        either way; this only mutes outbound messages.
+      </span>
+    </p>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button
+        class="btn"
+        id="discord-toggle"
+        data-enabled="{{ 'true' if discord_notifications_enabled else 'false' }}"
+      >{{ 'Disable Discord notifications' if discord_notifications_enabled else 'Enable Discord notifications' }}</button>
+      <span id="discord-toggle-status" class="muted" style="font-size:.85rem;"></span>
+    </div>
+  {% endif %}
+</article>
+
+<h2>Login credentials</h2>
+<article class="card" style="max-width:560px;">
+  <label style="display:block; margin-bottom:.6rem;">
+    <span class="muted" style="font-size:.8rem; display:block; margin-bottom:.2rem;">Username</span>
+    <input type="text" id="cred-username" value="{{ username }}" autocomplete="username" style="width:100%;">
+  </label>
+  <label style="display:block; margin-bottom:.6rem;">
+    <span class="muted" style="font-size:.8rem; display:block; margin-bottom:.2rem;">
+      New password <span class="muted">(leave blank to keep the current one)</span>
+    </span>
+    <input type="password" id="cred-new-password" autocomplete="new-password" style="width:100%;">
+  </label>
+  <label style="display:block; margin-bottom:1rem;">
+    <span class="muted" style="font-size:.8rem; display:block; margin-bottom:.2rem;">Confirm new password</span>
+    <input type="password" id="cred-confirm-password" autocomplete="new-password" style="width:100%;">
+  </label>
+  <label style="display:block; margin-bottom:1rem;">
+    <span class="muted" style="font-size:.8rem; display:block; margin-bottom:.2rem;">
+      Current password <span class="muted">(required to confirm this change)</span>
+    </span>
+    <input type="password" id="cred-current-password" autocomplete="current-password" style="width:100%;">
+  </label>
+
+  <div style="display:flex; align-items:center; gap:1rem;">
+    <button class="btn" id="cred-save">Save credentials</button>
+    <span id="cred-save-status" class="muted" style="font-size:.85rem;"></span>
+  </div>
+</article>
 {% endblock %}
 {% block scripts %}
 <script>
@@ -71,6 +154,100 @@ document.getElementById('save').onclick = async () => {
   } finally {
     btn.disabled = false;
     setTimeout(() => { status.textContent = ''; }, 3000);
+  }
+};
+
+const containersSaveBtn = document.getElementById('containers-save');
+if (containersSaveBtn) {
+  containersSaveBtn.onclick = async () => {
+    const btn = containersSaveBtn;
+    const status = document.getElementById('containers-save-status');
+    const excluded = Array.from(document.querySelectorAll('.container-toggle'))
+      .filter((el) => !el.checked)
+      .map((el) => el.value);
+    btn.disabled = true;
+    status.textContent = 'saving…';
+    try {
+      const res = await fetch('/api/scan-selection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ excluded }),
+      });
+      status.textContent = res.ok ? 'Saved ✓' : 'Save failed';
+    } catch (e) {
+      status.textContent = 'Save failed';
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    }
+  };
+}
+
+const discordToggle = document.getElementById('discord-toggle');
+if (discordToggle) {
+  discordToggle.onclick = async () => {
+    const status = document.getElementById('discord-toggle-status');
+    const label = document.getElementById('discord-status-label');
+    const nextEnabled = discordToggle.dataset.enabled !== 'true';
+    discordToggle.disabled = true;
+    status.textContent = 'saving…';
+    try {
+      const res = await fetch('/api/notifications/discord', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = data.error || 'Save failed';
+      } else {
+        discordToggle.dataset.enabled = data.enabled ? 'true' : 'false';
+        discordToggle.textContent = data.enabled ? 'Disable Discord notifications' : 'Enable Discord notifications';
+        label.textContent = data.enabled ? 'Enabled' : 'Disabled';
+        status.textContent = 'Saved ✓';
+      }
+    } catch (e) {
+      status.textContent = 'Save failed';
+    } finally {
+      discordToggle.disabled = false;
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    }
+  };
+}
+
+document.getElementById('cred-save').onclick = async () => {
+  const btn = document.getElementById('cred-save');
+  const status = document.getElementById('cred-save-status');
+  const username = document.getElementById('cred-username').value.trim();
+  const newPassword = document.getElementById('cred-new-password').value;
+  const confirmPassword = document.getElementById('cred-confirm-password').value;
+  const currentPassword = document.getElementById('cred-current-password').value;
+
+  if (!username) { status.textContent = 'Username cannot be blank'; return; }
+  if (newPassword !== confirmPassword) { status.textContent = 'New passwords do not match'; return; }
+  if (!currentPassword) { status.textContent = 'Current password is required'; return; }
+
+  btn.disabled = true;
+  status.textContent = 'saving…';
+  try {
+    const res = await fetch('/api/credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, new_password: newPassword || null, current_password: currentPassword }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'Save failed';
+    } else {
+      status.textContent = 'Saved ✓ — you may need to log in again';
+      document.getElementById('cred-new-password').value = '';
+      document.getElementById('cred-confirm-password').value = '';
+      document.getElementById('cred-current-password').value = '';
+    }
+  } catch (e) {
+    status.textContent = 'Save failed';
+  } finally {
+    btn.disabled = false;
   }
 };
 </script>
