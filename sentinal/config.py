@@ -32,12 +32,26 @@ class Settings:
     flask_secret_key: str
     dashboard_username: str
     dashboard_password: str
+    cloudflare_api_token: str
+    cloudflare_zone_id: str
+    cloudflare_hostnames: str
+    cloudflare_poll_minutes: int
 
     @property
     def discord_enabled(self) -> bool:
         """Discord is an optional notifier — configured only when both a bot
         token and a channel are set. When off, the web console is the sole UI."""
         return bool(self.discord_bot_token and self.discord_channel_id)
+
+    @property
+    def cloudflare_enabled(self) -> bool:
+        """Cloudflare access-traffic ingestion is optional — needs an API
+        token, the zone it should query, and at least one hostname to watch."""
+        return bool(self.cloudflare_api_token and self.cloudflare_zone_id and self.cloudflare_hostname_list)
+
+    @property
+    def cloudflare_hostname_list(self) -> list[str]:
+        return [h.strip() for h in self.cloudflare_hostnames.split(",") if h.strip()]
 
 
 @lru_cache
@@ -60,4 +74,8 @@ def get_settings() -> Settings:
         flask_secret_key=_env("FLASK_SECRET_KEY", required=True),
         dashboard_username=_env("DASHBOARD_USERNAME", required=True),
         dashboard_password=_env("DASHBOARD_PASSWORD", required=True),
+        cloudflare_api_token=_env("CLOUDFLARE_API_TOKEN"),
+        cloudflare_zone_id=_env("CLOUDFLARE_ZONE_ID"),
+        cloudflare_hostnames=_env("CLOUDFLARE_HOSTNAMES"),
+        cloudflare_poll_minutes=int(_env("CLOUDFLARE_POLL_MINUTES", "5")),
     )

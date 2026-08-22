@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Access{% endblock %}
+{% block content %}
+<h2>Access traffic</h2>
+{% if not cloudflare_enabled %}
+<p class="muted">Cloudflare access ingestion isn't configured — set CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID, and CLOUDFLARE_HOSTNAMES to see edge traffic here.</p>
+{% else %}
+<p class="muted">Edge traffic to your watched hostnames via Cloudflare — real client IPs, not what each app's own log records today. "Flagged" means volume or repeated-failure activity against a login-shaped path, not a confirmed failed login: Cloudflare can't see inside an app's response.</p>
+{% endif %}
+<form method="get" style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:end; margin-bottom:1rem;">
+  <label>Hostname<br><input type="text" name="hostname" value="{{ filters.hostname }}" placeholder="substring"></label>
+  <label>Client IP<br><input type="text" name="ip" value="{{ filters.ip }}" placeholder="substring"></label>
+  <label>Path<br><input type="text" name="path" value="{{ filters.path }}" placeholder="substring"></label>
+  <label>From<br><input type="date" name="date_from" value="{{ filters.date_from }}"></label>
+  <label>To<br><input type="date" name="date_to" value="{{ filters.date_to }}"></label>
+  <label style="display:flex; align-items:center; gap:.3rem;"><input type="checkbox" name="flagged" value="1" {{ 'checked' if only_flagged }}> Flagged only</label>
+  <button class="btn" type="submit">Filter</button>
+  <a class="row-btn" href="{{ url_for('dashboard.access_page') }}">Clear</a>
+</form>
+<div style="overflow-x:auto;">
+<table>
+  <thead><tr><th>Time (UTC)</th><th>Hostname</th><th>Client IP</th><th>Path</th><th>Status</th><th>Requests</th><th></th></tr></thead>
+  <tbody>
+  {% for e in events %}
+    <tr>
+      <td>{{ e.window_start.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ e.hostname }}</td>
+      <td>{{ e.client_ip }}</td>
+      <td style="max-width:32ch; overflow-wrap:anywhere; font-size:.78rem;">{{ e.path }}</td>
+      <td>{{ e.status_code }}</td>
+      <td>{{ e.request_count }}</td>
+      <td>{% if e.flagged %}<span class="badge FAILED">flagged</span>{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted">No access events{{ " yet — the poller ingests every few minutes." if cloudflare_enabled else "." }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

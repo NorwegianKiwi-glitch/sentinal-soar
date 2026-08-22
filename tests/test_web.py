@@ -1,4 +1,5 @@
 import base64
+import datetime as dt
 import threading
 from types import SimpleNamespace
 
@@ -103,6 +104,48 @@ def test_logs_filter_by_action():
     body = _client().get("/logs?action=FAILED", headers=_auth_header()).data.decode()
     assert "immich:1" in body
     assert "redis:1" not in body
+
+
+def test_access_page_requires_auth():
+    assert _client().get("/access").status_code == 401
+
+
+def test_access_page_shows_configuration_hint_when_disabled():
+    body = _client().get("/access", headers=_auth_header()).data.decode()
+    assert "isn't configured" in body
+
+
+def test_access_page_filters_by_flagged():
+    with db_module.SessionLocal() as session:
+        session.add_all(
+            [
+                db_module.AccessEvent(
+                    hostname="nextcloud.example.com",
+                    client_ip="203.0.113.5",
+                    path="/login",
+                    status_code=401,
+                    request_count=6,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=True,
+                ),
+                db_module.AccessEvent(
+                    hostname="nextcloud.example.com",
+                    client_ip="203.0.113.9",
+                    path="/photos/thumb",
+                    status_code=200,
+                    request_count=1,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=False,
+                ),
+            ]
+        )
+        session.commit()
+
+    body = _client().get("/access?flagged=1", headers=_auth_header()).data.decode()
+    assert "203.0.113.5" in body
+    assert "203.0.113.9" not in body
 
 
 def test_archive_log_is_soft_delete_not_hard_delete():

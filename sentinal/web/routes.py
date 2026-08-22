@@ -77,6 +77,37 @@ def logs():
     )
 
 
+@bp.get("/access")
+def access_page():
+    filters = {key: (request.args.get(key) or "").strip() for key in ("hostname", "ip", "path", "date_from", "date_to")}
+    only_flagged = request.args.get("flagged") == "1"
+    stmt = select(db.AccessEvent)
+    if filters["hostname"]:
+        stmt = stmt.where(db.AccessEvent.hostname.ilike(f"%{filters['hostname']}%"))
+    if filters["ip"]:
+        stmt = stmt.where(db.AccessEvent.client_ip.ilike(f"%{filters['ip']}%"))
+    if filters["path"]:
+        stmt = stmt.where(db.AccessEvent.path.ilike(f"%{filters['path']}%"))
+    if only_flagged:
+        stmt = stmt.where(db.AccessEvent.flagged.is_(True))
+    date_from = _parse_date(filters["date_from"])
+    if date_from:
+        stmt = stmt.where(db.AccessEvent.window_start >= date_from)
+    date_to = _parse_date(filters["date_to"])
+    if date_to:
+        stmt = stmt.where(db.AccessEvent.window_start < date_to + dt.timedelta(days=1))
+    with db.SessionLocal() as session:
+        rows = session.scalars(stmt.order_by(db.AccessEvent.window_start.desc()).limit(500)).all()
+    return render_template(
+        "access.html",
+        events=rows,
+        filters=filters,
+        only_flagged=only_flagged,
+        cloudflare_enabled=get_settings().cloudflare_enabled,
+        active="access",
+    )
+
+
 @bp.get("/exceptions")
 def exceptions():
     with db.SessionLocal() as session:

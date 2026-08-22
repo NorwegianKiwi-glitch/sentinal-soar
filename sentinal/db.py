@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import enum
 
-from sqlalchemy import DateTime, JSON, String, Text, create_engine, text
+from sqlalchemy import DateTime, JSON, String, Text, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -146,6 +146,37 @@ class DashboardCredentials(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime, default=dt.datetime.utcnow, onupdate=dt.datetime.utcnow
     )
+
+
+class AccessEvent(Base):
+    """An aggregated slice of Cloudflare edge traffic to one watched hostname.
+
+    Each row is one (hostname, client_ip, path, status_code, window) group as
+    returned by Cloudflare's GraphQL Analytics API — see cloudflare.py/access.py.
+    `flagged` marks groups the brute-force heuristic considers suspicious
+    (e.g. many requests to a login-like path from one IP in one window); it is
+    a pattern flag on edge traffic, not proof a login actually failed — see
+    ARCHITECTURE.md / the Access page for that caveat.
+    """
+
+    __tablename__ = "access_events"
+    __table_args__ = (
+        # Cloudflare's polling window overlaps the previous tick's window
+        # slightly on purpose (see access.py); this makes re-ingesting the
+        # same group idempotent instead of double-counting it.
+        UniqueConstraint("hostname", "client_ip", "path", "status_code", "window_start", name="uq_access_event_group"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    status_code: Mapped[int] = mapped_column(nullable=False)
+    request_count: Mapped[int] = mapped_column(nullable=False)
+    window_start: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    window_end: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    flagged: Mapped[bool] = mapped_column(default=False)
+    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
 engine = create_engine(get_settings().database_url, future=True)

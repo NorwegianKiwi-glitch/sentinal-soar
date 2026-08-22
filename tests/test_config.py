@@ -21,6 +21,10 @@ _BASE = dict(
     flask_secret_key="s",
     dashboard_username="u",
     dashboard_password="p",
+    cloudflare_api_token="",
+    cloudflare_zone_id="",
+    cloudflare_hostnames="",
+    cloudflare_poll_minutes=5,
 )
 
 
@@ -35,3 +39,25 @@ def test_discord_enabled_with_token_and_channel():
 
 def test_discord_disabled_with_token_but_no_channel():
     assert Settings(**{**_BASE, "discord_bot_token": "tok"}).discord_enabled is False
+
+
+def test_cloudflare_disabled_without_token_zone_or_hostnames():
+    assert Settings(**_BASE).cloudflare_enabled is False
+
+
+def test_cloudflare_enabled_with_token_zone_and_hostnames():
+    settings = Settings(
+        **{
+            **_BASE,
+            "cloudflare_api_token": "tok",
+            "cloudflare_zone_id": "zone",
+            "cloudflare_hostnames": "a.example.com, b.example.com",
+        }
+    )
+    assert settings.cloudflare_enabled is True
+    assert settings.cloudflare_hostname_list == ["a.example.com", "b.example.com"]
+
+
+def test_cloudflare_disabled_when_hostnames_blank():
+    settings = Settings(**{**_BASE, "cloudflare_api_token": "tok", "cloudflare_zone_id": "zone"})
+    assert settings.cloudflare_enabled is False
