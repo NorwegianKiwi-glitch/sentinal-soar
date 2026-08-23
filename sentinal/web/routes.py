@@ -5,7 +5,7 @@ import logging
 import threading
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select
 
 from .. import container_selection, credentials, db, docker_client, notifications, patching, pipeline, schedule
 from ..config import get_settings
@@ -116,7 +116,9 @@ def access_page():
                 db.AccessEvent.client_ip,
                 func.max(db.AccessEvent.country).label("country"),
                 func.sum(db.AccessEvent.request_count).label("requests"),
-                func.max(db.AccessEvent.flagged).label("flagged"),
+                # Postgres has no max(boolean) aggregate (SQLite silently accepts it
+                # since it stores bools as 0/1) — cast first so this works on both.
+                func.max(cast(db.AccessEvent.flagged, Integer)).label("flagged"),
             )
             .where(*conditions)
             .group_by(db.AccessEvent.client_ip)
