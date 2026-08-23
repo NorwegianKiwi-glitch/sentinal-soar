@@ -5,9 +5,9 @@ import logging
 import threading
 
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
-from sqlalchemy import select
+from sqlalchemy import Integer, cast, func, select
 
-from .. import container_selection, credentials, db, docker_client, notifications, patching, pipeline, schedule
+from .. import access, container_selection, credentials, db, docker_client, hostnames, notifications, patching, pipeline, schedule
 from ..config import get_settings
 
 log = logging.getLogger(__name__)
@@ -51,7 +51,12 @@ def decisions():
             {"d": d, "patch": patching.describe_patch(d.image_name, d.proposed_image, d.proposed_major_image)}
             for d in rows
         ]
-    return render_template("decisions.html", items=items, active="decisions")
+        flagged_events = session.scalars(
+            select(db.AccessEvent)
+            .where(db.AccessEvent.flagged.is_(True), db.AccessEvent.acknowledged.is_(False))
+            .order_by(db.AccessEvent.window_start.desc())
+        ).all()
+    return render_template("decisions.html", items=items, flagged_events=flagged_events, active="decisions")
 
 
 @bp.get("/logs")
@@ -74,6 +79,80 @@ def logs():
         rows = session.scalars(stmt.order_by(db.ScanLog.id.desc())).all()
     return render_template(
         "logs.html", logs=rows, filters=filters, actions=[a.value for a in db.ActionTaken], active="logs"
+    )
+
+
+@bp.get("/access")
+def access_page():
+    """Traffic table plus two "where is it coming from" summaries (top source
+    IPs, top countries) computed over the same filtered set — not just the
+    500-row page shown in the table, so a filter narrows the summaries too."""
+    filters = {key: (request.args.get(key) or "").strip() for key in ("hostname", "ip", "path", "date_from", "date_to")}
+    only_flagged = request.args.get("flagged") == "1"
+    conditions = []
+    if filters["hostname"]:
+        conditions.append(db.AccessEvent.hostname.ilike(f"%{filters['hostname']}%"))
+    if filters["ip"]:
+        conditions.append(db.AccessEvent.client_ip.ilike(f"%{filters['ip']}%"))
+    if filters["path"]:
+        conditions.append(db.AccessEvent.path.ilike(f"%{filters['path']}%"))
+    if only_flagged:
+        conditions.append(db.AccessEvent.flagged.is_(True))
+    date_from = _parse_date(filters["date_from"])
+    if date_from:
+        conditions.append(db.AccessEvent.window_start >= date_from)
+    date_to = _parse_date(filters["date_to"])
+    if date_to:
+        conditions.append(db.AccessEvent.window_start < date_to + dt.timedelta(days=1))
+
+    with db.SessionLocal() as session:
+        rows = session.scalars(
+            select(db.AccessEvent).where(*conditions).order_by(db.AccessEvent.window_start.desc()).limit(500)
+        ).all()
+        total_requests = session.scalar(
+            select(func.coalesce(func.sum(db.AccessEvent.request_count), 0)).where(*conditions)
+        )
+        unique_ip_count = session.scalar(select(func.count(func.distinct(db.AccessEvent.client_ip))).where(*conditions))
+        flagged_count = session.scalar(
+            select(func.count()).select_from(db.AccessEvent).where(*conditions, db.AccessEvent.flagged.is_(True))
+        )
+        top_ips = session.execute(
+            select(
+                db.AccessEvent.client_ip,
+                func.max(db.AccessEvent.country).label("country"),
+                func.sum(db.AccessEvent.request_count).label("requests"),
+                # Postgres has no max(boolean) aggregate (SQLite silently accepts it
+                # since it stores bools as 0/1) — cast first so this works on both.
+                func.max(cast(db.AccessEvent.flagged, Integer)).label("flagged"),
+            )
+            .where(*conditions)
+            .group_by(db.AccessEvent.client_ip)
+            .order_by(func.sum(db.AccessEvent.request_count).desc())
+            .limit(8)
+        ).all()
+        top_countries = session.execute(
+            select(db.AccessEvent.country, func.sum(db.AccessEvent.request_count).label("requests"))
+            .where(*conditions, db.AccessEvent.country != "")
+            .group_by(db.AccessEvent.country)
+            .order_by(func.sum(db.AccessEvent.request_count).desc())
+            .limit(8)
+        ).all()
+
+    return render_template(
+        "access.html",
+        events=rows,
+        filters=filters,
+        only_flagged=only_flagged,
+        cloudflare_configured=get_settings().cloudflare_configured,
+        watched_hostnames=hostnames.get_hostnames(),
+        total_requests=total_requests,
+        unique_ip_count=unique_ip_count,
+        flagged_count=flagged_count,
+        top_ips=top_ips,
+        top_countries=top_countries,
+        max_ip_requests=max((r.requests for r in top_ips), default=0),
+        max_country_requests=max((r.requests for r in top_countries), default=0),
+        active="access",
     )
 
 
@@ -102,6 +181,10 @@ def settings_page():
         containers_error=containers_error,
         discord_connected=get_settings().discord_enabled,
         discord_notifications_enabled=notifications.enabled(),
+        cloudflare_configured=get_settings().cloudflare_configured,
+        watched_hostnames=hostnames.get_hostnames(),
+        alert_cooldown_minutes=access.get_alert_cooldown_minutes(),
+        setup_status=_setup_status(),
         active="settings",
     )
 
@@ -269,6 +352,33 @@ def update_credentials():
     return jsonify({"username": creds.username})
 
 
+@bp.post("/api/access-hostnames")
+def add_access_hostname():
+    data = request.get_json(silent=True) or request.form
+    try:
+        watched = hostnames.add_hostname(data.get("hostname", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"hostnames": watched})
+
+
+@bp.post("/api/access-hostnames/<path:hostname>/delete")
+def delete_access_hostname(hostname: str):
+    return jsonify({"hostnames": hostnames.remove_hostname(hostname)})
+
+
+@bp.post("/api/access-alert-cooldown")
+def update_access_alert_cooldown():
+    data = request.get_json(silent=True) or request.form
+    try:
+        minutes = int(data.get("minutes"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "minutes must be a whole number"}), 400
+    if minutes < 0:
+        return jsonify({"error": "minutes cannot be negative"}), 400
+    return jsonify({"minutes": access.set_alert_cooldown_minutes(minutes)})
+
+
 # --- log / exception mutations ---------------------------------------------
 
 
@@ -295,6 +405,30 @@ def delete_exception(exception_id: int):
     return jsonify({"status": "deleted"})
 
 
+@bp.post("/api/access-events/<int:event_id>/acknowledge")
+def acknowledge_access_event(event_id: int):
+    with db.SessionLocal() as session:
+        event = session.get(db.AccessEvent, event_id)
+        if event is None:
+            return jsonify({"error": "not found"}), 404
+        event.acknowledged = True
+        session.commit()
+    return jsonify({"status": "acknowledged"})
+
+
+@bp.post("/api/access-events/<int:event_id>/delete")
+def delete_access_event(event_id: int):
+    # Hard delete, not soft (unlike ScanLog/archive_log): access events are
+    # ingested traffic data, not an audit trail of actions Sentinal took.
+    with db.SessionLocal() as session:
+        event = session.get(db.AccessEvent, event_id)
+        if event is None:
+            return jsonify({"error": "not found"}), 404
+        session.delete(event)
+        session.commit()
+    return jsonify({"status": "deleted"})
+
+
 def _list_containers_for_settings() -> tuple[list[dict], str | None]:
     excluded = container_selection.excluded_names()
     try:
@@ -314,6 +448,42 @@ def _list_containers_for_settings() -> tuple[list[dict], str | None]:
         key=lambda c: c["name"],
     )
     return containers, None
+
+
+def _setup_status() -> list[dict]:
+    """Read-only summary of which integrations' env vars are set — never the
+    values themselves, just presence. Purely a setup aid; nothing here is
+    editable from the console, since these are only read once at boot (see
+    config.get_settings, @lru_cache) and some (the Discord bot token, in
+    particular) can't be hot-swapped without restarting the container."""
+    settings = get_settings()
+    return [
+        {
+            "name": "Gemini (AI triage)",
+            "required": True,
+            "connected": bool(settings.gemini_api_key),
+            "vars": [("GEMINI_API_KEY", bool(settings.gemini_api_key))],
+        },
+        {
+            "name": "Discord notifications",
+            "required": False,
+            "connected": settings.discord_enabled,
+            "vars": [
+                ("DISCORD_BOT_TOKEN", bool(settings.discord_bot_token)),
+                ("DISCORD_GUILD_ID", bool(settings.discord_guild_id)),
+                ("DISCORD_CHANNEL_ID", bool(settings.discord_channel_id)),
+            ],
+        },
+        {
+            "name": "Cloudflare access traffic",
+            "required": False,
+            "connected": settings.cloudflare_configured,
+            "vars": [
+                ("CLOUDFLARE_API_TOKEN", bool(settings.cloudflare_api_token)),
+                ("CLOUDFLARE_ZONE_ID", bool(settings.cloudflare_zone_id)),
+            ],
+        },
+    ]
 
 
 def _valid_hhmm(value: str) -> bool:

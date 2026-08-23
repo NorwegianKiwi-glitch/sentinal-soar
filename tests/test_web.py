@@ -1,4 +1,5 @@
 import base64
+import datetime as dt
 import threading
 from types import SimpleNamespace
 
@@ -63,6 +64,89 @@ def test_decisions_page_shows_buttons_by_patchability():
     assert "No pull-based patch" in body  # the digest-pinned one explains instead
 
 
+def test_decisions_page_lists_flagged_unacknowledged_access_events():
+    with db_module.SessionLocal() as session:
+        session.add_all(
+            [
+                db_module.AccessEvent(
+                    hostname="nc.example.com",
+                    client_ip="203.0.113.5",
+                    path="/login",
+                    status_code=401,
+                    request_count=6,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=True,
+                ),
+                db_module.AccessEvent(
+                    hostname="nc.example.com",
+                    client_ip="203.0.113.6",
+                    path="/login",
+                    status_code=401,
+                    request_count=6,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=True,
+                    acknowledged=True,  # already handled — should not show
+                ),
+                db_module.AccessEvent(
+                    hostname="nc.example.com",
+                    client_ip="203.0.113.7",
+                    path="/photos",
+                    status_code=200,
+                    request_count=1,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=False,  # not flagged — should not show
+                ),
+            ]
+        )
+        session.commit()
+
+    body = _client().get("/decisions", headers=_auth_header()).data.decode()
+    assert "Flagged traffic (1)" in body
+    assert "203.0.113.5" in body
+    assert "203.0.113.6" not in body
+    assert "203.0.113.7" not in body
+
+
+def test_acknowledge_access_event_requires_auth():
+    assert _client().post("/api/access-events/1/acknowledge").status_code == 401
+
+
+def test_acknowledge_access_event_hides_it_from_decisions():
+    with db_module.SessionLocal() as session:
+        event = db_module.AccessEvent(
+            hostname="nc.example.com",
+            client_ip="203.0.113.5",
+            path="/login",
+            status_code=401,
+            request_count=6,
+            window_start=dt.datetime(2026, 8, 22, 10, 0),
+            window_end=dt.datetime(2026, 8, 22, 10, 1),
+            flagged=True,
+        )
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+        event_id = event.id
+
+    res = _client().post(f"/api/access-events/{event_id}/acknowledge", headers=_auth_header())
+    assert res.status_code == 200
+
+    body = _client().get("/decisions", headers=_auth_header()).data.decode()
+    assert "Flagged traffic" not in body
+
+    # acknowledging is a dismissal, not a delete — the row itself must survive
+    with db_module.SessionLocal() as session:
+        assert session.get(db_module.AccessEvent, event_id) is not None
+
+
+def test_acknowledge_access_event_404s_when_missing():
+    res = _client().post("/api/access-events/999999/acknowledge", headers=_auth_header())
+    assert res.status_code == 404
+
+
 def test_decision_action_runs_resolve(monkeypatch):
     done = threading.Event()
     calls = []
@@ -105,6 +189,146 @@ def test_logs_filter_by_action():
     assert "redis:1" not in body
 
 
+def test_access_page_requires_auth():
+    assert _client().get("/access").status_code == 401
+
+
+def test_access_page_shows_configuration_hint_when_disabled():
+    body = _client().get("/access", headers=_auth_header()).data.decode()
+    assert "isn't configured" in body
+
+
+def test_access_page_filters_by_flagged():
+    with db_module.SessionLocal() as session:
+        session.add_all(
+            [
+                db_module.AccessEvent(
+                    hostname="nextcloud.example.com",
+                    client_ip="203.0.113.5",
+                    path="/login",
+                    status_code=401,
+                    request_count=6,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=True,
+                ),
+                db_module.AccessEvent(
+                    hostname="nextcloud.example.com",
+                    client_ip="203.0.113.9",
+                    path="/photos/thumb",
+                    status_code=200,
+                    request_count=1,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=False,
+                ),
+            ]
+        )
+        session.commit()
+
+    body = _client().get("/access?flagged=1", headers=_auth_header()).data.decode()
+    assert "203.0.113.5" in body
+    assert "203.0.113.9" not in body
+
+
+def test_access_page_shows_no_hostnames_hint_when_configured_but_empty(monkeypatch):
+    monkeypatch.setattr("sentinal.web.routes.get_settings", lambda: type("S", (), {"cloudflare_configured": True})())
+    body = _client().get("/access", headers=_auth_header()).data.decode()
+    assert "No hostnames are being watched yet" in body
+
+
+def test_delete_access_event_requires_auth():
+    assert _client().post("/api/access-events/1/delete").status_code == 401
+
+
+def test_delete_access_event_removes_it_and_is_idempotent_on_missing():
+    with db_module.SessionLocal() as session:
+        event = db_module.AccessEvent(
+            hostname="nextcloud.example.com",
+            client_ip="203.0.113.5",
+            path="/login",
+            status_code=401,
+            request_count=6,
+            window_start=dt.datetime(2026, 8, 22, 10, 0),
+            window_end=dt.datetime(2026, 8, 22, 10, 1),
+        )
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+        event_id = event.id
+
+    res = _client().post(f"/api/access-events/{event_id}/delete", headers=_auth_header())
+    assert res.status_code == 200
+    with db_module.SessionLocal() as session:
+        assert session.get(db_module.AccessEvent, event_id) is None
+
+    res = _client().post(f"/api/access-events/{event_id}/delete", headers=_auth_header())
+    assert res.status_code == 404
+
+
+def test_settings_page_lists_watched_hostnames():
+    from sentinal import hostnames
+
+    hostnames.add_hostname("cloud.example.com")
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "cloud.example.com" in body
+
+
+def test_add_access_hostname_persists_and_normalizes():
+    res = _client().post(
+        "/api/access-hostnames",
+        headers=_auth_header(),
+        json={"hostname": "HTTPS://Cloud.Example.com/path"},
+    )
+    assert res.status_code == 200
+    assert res.get_json()["hostnames"] == ["cloud.example.com"]
+
+
+def test_add_access_hostname_rejects_invalid():
+    res = _client().post("/api/access-hostnames", headers=_auth_header(), json={"hostname": "not a hostname"})
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+
+def test_delete_access_hostname_removes_it():
+    from sentinal import hostnames
+
+    hostnames.add_hostname("cloud.example.com")
+    res = _client().post("/api/access-hostnames/cloud.example.com/delete", headers=_auth_header())
+    assert res.status_code == 200
+    assert res.get_json()["hostnames"] == []
+
+
+def test_settings_page_shows_default_alert_cooldown():
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert 'id="alert-cooldown" min="0" max="1440" value="30"' in body
+
+
+def test_update_access_alert_cooldown_requires_auth():
+    assert _client().post("/api/access-alert-cooldown", json={"minutes": 10}).status_code == 401
+
+
+def test_update_access_alert_cooldown_persists():
+    res = _client().post("/api/access-alert-cooldown", headers=_auth_header(), json={"minutes": 45})
+    assert res.status_code == 200
+    assert res.get_json()["minutes"] == 45
+
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert 'id="alert-cooldown" min="0" max="1440" value="45"' in body
+
+
+def test_update_access_alert_cooldown_rejects_non_integer():
+    res = _client().post("/api/access-alert-cooldown", headers=_auth_header(), json={"minutes": "soon"})
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+
+def test_update_access_alert_cooldown_rejects_negative():
+    res = _client().post("/api/access-alert-cooldown", headers=_auth_header(), json={"minutes": -1})
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+
 def test_archive_log_is_soft_delete_not_hard_delete():
     with db_module.SessionLocal() as session:
         log = db_module.ScanLog(image_name="nginx:latest", action_taken="CLEAN", log_payload={"details": "test"})
@@ -133,6 +357,47 @@ def test_settings_page_renders():
     body = _client().get("/settings", headers=_auth_header()).data.decode()
     assert "Scan schedule" in body
     assert "Periodic scans" in body
+
+
+def test_settings_page_setup_status_shows_gemini_and_discord_connected():
+    # conftest.py sets GEMINI_API_KEY/DISCORD_BOT_TOKEN/DISCORD_GUILD_ID/DISCORD_CHANNEL_ID
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "Setup status" in body
+    assert "<code>GEMINI_API_KEY</code> — set" in body
+    assert "<code>DISCORD_BOT_TOKEN</code> — set" in body
+    assert "<code>DISCORD_GUILD_ID</code> — set" in body
+    assert "<code>DISCORD_CHANNEL_ID</code> — set" in body
+
+
+def test_settings_page_setup_status_shows_cloudflare_not_configured():
+    # conftest.py never sets CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "<code>CLOUDFLARE_API_TOKEN</code> — not set" in body
+    assert "<code>CLOUDFLARE_ZONE_ID</code> — not set" in body
+    assert "not configured" in body
+
+
+def test_settings_page_setup_status_never_shows_secret_values(monkeypatch):
+    monkeypatch.setattr(
+        "sentinal.web.routes.get_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "gemini_api_key": "super-secret-gemini-key",
+                "discord_bot_token": "super-secret-bot-token",
+                "discord_guild_id": 123,
+                "discord_channel_id": 456,
+                "discord_enabled": True,
+                "cloudflare_api_token": "super-secret-cf-token",
+                "cloudflare_zone_id": "zone-abc",
+                "cloudflare_configured": True,
+            },
+        )(),
+    )
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "super-secret" not in body
+    assert "zone-abc" not in body
 
 
 def test_update_schedule_persists():
@@ -274,7 +539,20 @@ def test_settings_page_shows_discord_toggle_when_connected():
 def test_settings_page_hides_toggle_when_discord_not_connected(monkeypatch):
     from sentinal.web import routes
 
-    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(discord_enabled=False))
+    monkeypatch.setattr(
+        routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            discord_enabled=False,
+            cloudflare_configured=False,
+            gemini_api_key="test-key",
+            discord_bot_token="",
+            discord_guild_id=0,
+            discord_channel_id=0,
+            cloudflare_api_token="",
+            cloudflare_zone_id="",
+        ),
+    )
 
     body = _client().get("/settings", headers=_auth_header()).data.decode()
     assert "isn't connected" in body

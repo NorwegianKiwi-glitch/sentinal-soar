@@ -232,6 +232,17 @@ async def post_error(source: str, message: str) -> None:
     await channel.send(f"**Sentinal error — {source}**\n{message}")
 
 
+async def post_access_alert(event: db.AccessEvent) -> None:
+    channel = await _get_channel()
+    where = f" ({event.country})" if event.country else ""
+    await channel.send(
+        f"🚨 **Suspicious traffic flagged**\n"
+        f"`{event.client_ip}`{where} — {event.request_count} requests to `{event.path}` "
+        f"on `{event.hostname}` (status {event.status_code})\n"
+        f"Review it on the Decisions or Access page in Sentinal."
+    )
+
+
 async def set_scanning_presence(active: bool) -> None:
     await bot.change_presence(activity=SCANNING_ACTIVITY if active else IDLE_ACTIVITY)
 
@@ -273,6 +284,10 @@ def post_scan_complete_threadsafe(count: int) -> None:
 
 def post_error_threadsafe(source: str, message: str) -> None:
     _dispatch(lambda: post_error(source, message))
+
+
+def post_access_alert_threadsafe(event: db.AccessEvent) -> None:
+    _dispatch(lambda: post_access_alert(event))
 
 
 def set_scanning_presence_threadsafe(active: bool) -> None:

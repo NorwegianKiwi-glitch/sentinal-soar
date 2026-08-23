@@ -17,6 +17,11 @@ services:
       FLASK_SECRET_KEY: ${FLASK_SECRET_KEY}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD}
+      # Cloudflare access traffic is optional — leave unset to skip polling.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
+      CLOUDFLARE_HOSTNAMES: ${CLOUDFLARE_HOSTNAMES:-}
+      CLOUDFLARE_POLL_MINUTES: ${CLOUDFLARE_POLL_MINUTES:-5}
     volumes:
       # Grants the container full control of the host's Docker daemon — see
       # "Known limitations" in ARCHITECTURE.md before exposing this beyond your LAN.
