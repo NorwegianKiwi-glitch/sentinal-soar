@@ -1,6 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Decisions{% endblock %}
 {% block content %}
+{% if flagged_events %}
+<h2>Flagged traffic ({{ flagged_events|length }})</h2>
+{% for e in flagged_events %}
+<article class="card" data-flagged-event="{{ e.id }}">
+  <div style="display:flex; gap:.5rem; align-items:baseline; flex-wrap:wrap;">
+    <strong>{{ e.client_ip }}</strong>
+    {% if e.country %}<span class="muted">({{ e.country }})</span>{% endif %}
+    <span class="muted" style="margin-left:auto;">{{ e.window_start.strftime("%Y-%m-%d %H:%M") }} UTC</span>
+  </div>
+  <p style="margin:.5rem 0; font-size:.9rem;">
+    {{ e.request_count }} requests to <code>{{ e.path }}</code> on <strong>{{ e.hostname }}</strong>
+    (status {{ e.status_code }})
+  </p>
+  <p class="muted" style="font-size:.8rem;">
+    Volume/failure pattern against a login-shaped path — not a confirmed failed login.
+    See it in context on the <a href="{{ url_for('dashboard.access_page') }}">Access page</a>.
+  </p>
+  <div style="display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.5rem;">
+    <button class="row-btn" onclick="acknowledgeFlagged({{ e.id }})">Acknowledge</button>
+  </div>
+</article>
+{% endfor %}
+{% endif %}
+
 <h2>Pending decisions</h2>
 {% if not items %}
   <p class="muted">Nothing awaiting a decision. Run a scan to check your containers.</p>
@@ -32,6 +56,10 @@
 {% endblock %}
 {% block scripts %}
 <script>
+async function acknowledgeFlagged(id) {
+  await fetch(`/api/access-events/${id}/acknowledge`, { method: 'POST' });
+  document.querySelector(`[data-flagged-event="${id}"]`).remove();
+}
 async function act(id, choice) {
   const card = document.querySelector(`[data-decision="${id}"]`);
   card.querySelectorAll('button').forEach(b => b.disabled = true);

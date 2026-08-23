@@ -21,6 +21,10 @@ _BASE = dict(
     flask_secret_key="s",
     dashboard_username="u",
     dashboard_password="p",
+    cloudflare_api_token="",
+    cloudflare_zone_id="",
+    cloudflare_hostnames="",
+    cloudflare_poll_minutes=5,
 )
 
 
@@ -35,3 +39,19 @@ def test_discord_enabled_with_token_and_channel():
 
 def test_discord_disabled_with_token_but_no_channel():
     assert Settings(**{**_BASE, "discord_bot_token": "tok"}).discord_enabled is False
+
+
+def test_cloudflare_not_configured_without_token_or_zone():
+    assert Settings(**_BASE).cloudflare_configured is False
+
+
+def test_cloudflare_configured_with_token_and_zone_regardless_of_hostnames():
+    # Hostnames are DB-authoritative (see hostnames.py) and editable from
+    # Settings at runtime, so "configured" must not depend on them.
+    settings = Settings(**{**_BASE, "cloudflare_api_token": "tok", "cloudflare_zone_id": "zone"})
+    assert settings.cloudflare_configured is True
+
+
+def test_cloudflare_hostname_list_parses_and_strips_the_seed_env_var():
+    settings = Settings(**{**_BASE, "cloudflare_hostnames": "a.example.com, b.example.com"})
+    assert settings.cloudflare_hostname_list == ["a.example.com", "b.example.com"]

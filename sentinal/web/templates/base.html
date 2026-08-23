@@ -46,6 +46,7 @@
     <nav>
       <a href="{{ url_for('dashboard.decisions') }}" class="{{ 'active' if active == 'decisions' }}">Decisions</a>
       <a href="{{ url_for('dashboard.logs') }}" class="{{ 'active' if active == 'logs' }}">Scan Log</a>
+      <a href="{{ url_for('dashboard.access_page') }}" class="{{ 'active' if active == 'access' }}">Access</a>
       <a href="{{ url_for('dashboard.exceptions') }}" class="{{ 'active' if active == 'exceptions' }}">Exceptions</a>
       <a href="{{ url_for('dashboard.settings_page') }}" class="{{ 'active' if active == 'settings' }}">Settings</a>
     </nav>

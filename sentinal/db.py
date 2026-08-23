@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import enum
 
-from sqlalchemy import DateTime, JSON, String, Text, create_engine, text
+from sqlalchemy import DateTime, JSON, String, Text, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -148,6 +148,81 @@ class DashboardCredentials(Base):
     )
 
 
+class WatchedHostname(Base):
+    """A hostname the Access page's Cloudflare poller watches — see hostnames.py.
+    Seeded from CLOUDFLARE_HOSTNAMES once (see AccessConfig below for the
+    seeded marker), then DB-authoritative: add/remove from the Settings page
+    take effect without touching .env or redeploying."""
+
+    __tablename__ = "watched_hostnames"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hostname: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class AccessConfig(Base):
+    """Single row (id=1) of runtime-editable Access-feature settings.
+
+    `hostnames_seeded` tracks whether watched_hostnames has ever been seeded
+    from CLOUDFLARE_HOSTNAMES, independent of whether the list is currently
+    empty. Without a separate marker, "seeded" would have to mean "the table
+    has rows," which would make hostnames.seed_from_env() re-add the env
+    var's hostnames the next time it's called (i.e. the next process
+    restart) after a user deliberately removed every hostname — this row is
+    what lets a deliberate empty list actually stick.
+
+    `alert_cooldown_minutes` throttles Discord/Decisions-tab notifications
+    per source IP — see access.py's get/set_alert_cooldown_minutes() and
+    AccessEvent.alerted_at below."""
+
+    __tablename__ = "access_config"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hostnames_seeded: Mapped[bool] = mapped_column(default=False)
+    alert_cooldown_minutes: Mapped[int] = mapped_column(default=30)
+
+
+class AccessEvent(Base):
+    """An aggregated slice of Cloudflare edge traffic to one watched hostname.
+
+    Each row is one (hostname, client_ip, path, status_code, window) group as
+    returned by Cloudflare's GraphQL Analytics API — see cloudflare.py/access.py.
+    `flagged` marks groups the brute-force heuristic considers suspicious
+    (e.g. many requests to a login-like path from one IP in one window); it is
+    a pattern flag on edge traffic, not proof a login actually failed — see
+    ARCHITECTURE.md / the Access page for that caveat.
+    """
+
+    __tablename__ = "access_events"
+    __table_args__ = (
+        # Cloudflare's polling window overlaps the previous tick's window
+        # slightly on purpose (see access.py); this makes re-ingesting the
+        # same group idempotent instead of double-counting it.
+        UniqueConstraint("hostname", "client_ip", "path", "status_code", "window_start", name="uq_access_event_group"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    client_ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    country: Mapped[str] = mapped_column(String(64), default="")
+    path: Mapped[str] = mapped_column(String(512), nullable=False)
+    status_code: Mapped[int] = mapped_column(nullable=False)
+    request_count: Mapped[int] = mapped_column(nullable=False)
+    window_start: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    window_end: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
+    flagged: Mapped[bool] = mapped_column(default=False)
+    # Dismissed from the Decisions page — see routes.py's acknowledge endpoint.
+    # Independent of `flagged`: acknowledging doesn't reclassify the traffic,
+    # it just stops asking for a look at this specific row.
+    acknowledged: Mapped[bool] = mapped_column(default=False)
+    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Set the moment a notification actually fires for this row's client_ip
+    # (not merely when the row is flagged) — see access.py's cooldown check,
+    # which only lets one alert per IP through per AccessConfig.alert_cooldown_minutes.
+    alerted_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 engine = create_engine(get_settings().database_url, future=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
@@ -170,4 +245,11 @@ def _apply_migrations() -> None:
         )
         conn.execute(
             text("ALTER TABLE pending_decisions ADD COLUMN IF NOT EXISTS proposed_major_image VARCHAR(255)")
+        )
+        conn.execute(
+            text("ALTER TABLE access_events ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT FALSE")
+        )
+        conn.execute(text("ALTER TABLE access_events ADD COLUMN IF NOT EXISTS alerted_at TIMESTAMP"))
+        conn.execute(
+            text("ALTER TABLE access_config ADD COLUMN IF NOT EXISTS alert_cooldown_minutes INTEGER NOT NULL DEFAULT 30")
         )

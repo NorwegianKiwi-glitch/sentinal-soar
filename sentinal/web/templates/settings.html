@@ -1,6 +1,31 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 {% block content %}
+<h2>Setup status</h2>
+<article class="card" style="max-width:560px;">
+  <p class="muted" style="font-size:.85rem; margin-top:0;">
+    Set via environment variables in <code>.env</code> next to <code>docker-compose.yml</code> — values
+    are never shown here, only whether each is set. Editing <code>.env</code> requires a container
+    restart (<code>docker compose up -d</code>) to take effect.
+  </p>
+  {% for group in setup_status %}
+  <div style="margin-bottom:{{ '0' if loop.last else '1rem' }};">
+    <div style="display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;">
+      <strong>{{ group.name }}</strong>
+      <span class="muted" style="font-size:.78rem;">({{ 'required' if group.required else 'optional' }})</span>
+      <span class="badge {{ 'PATCHED' if group.connected else 'AUTO_SKIP' }}" style="margin-left:auto;">
+        {{ 'connected' if group.connected else 'not configured' }}
+      </span>
+    </div>
+    <ul style="margin:.3rem 0 0; padding-left:1.2rem; font-size:.85rem;">
+      {% for var_name, present in group.vars %}
+        <li><code>{{ var_name }}</code> — {{ 'set' if present else 'not set' }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</article>
+
 <h2>Scan schedule</h2>
 <article class="card" style="max-width:560px;">
   <label style="display:flex; align-items:center; gap:.6rem; margin-bottom:1rem;">
@@ -88,6 +113,41 @@
       <span id="discord-toggle-status" class="muted" style="font-size:.85rem;"></span>
     </div>
   {% endif %}
+</article>
+
+<h2>Access hostnames</h2>
+<article class="card" style="max-width:560px;">
+  {% if not cloudflare_configured %}
+    <p class="muted" style="margin-top:0;">
+      Cloudflare access ingestion isn't configured — set <code>CLOUDFLARE_API_TOKEN</code> and
+      <code>CLOUDFLARE_ZONE_ID</code> to enable it. Hostnames added below take effect once those are set.
+    </p>
+  {% endif %}
+  <p class="muted" style="font-size:.85rem; margin-top:0;">
+    Hostnames the <a href="{{ url_for('dashboard.access_page') }}">Access page</a>'s Cloudflare poller watches for traffic.
+  </p>
+  <div id="hostname-list" style="margin-bottom:1rem;"></div>
+  <div style="display:flex; gap:.6rem; align-items:center;">
+    <input type="text" id="hostname-input" placeholder="e.g. cloud.example.com" style="flex:1;">
+    <button class="btn" id="hostname-add">Add</button>
+  </div>
+  <span id="hostname-status" class="muted" style="font-size:.85rem; display:block; margin-top:.5rem;"></span>
+
+  <fieldset style="border:1px solid color-mix(in srgb, CanvasText 15%, transparent); border-radius:8px; padding:.8rem 1rem; margin:1rem 0 0;">
+    <legend class="muted" style="font-size:.8rem;">Alerting</legend>
+    <label style="display:flex; align-items:center; gap:.5rem; margin-bottom:.6rem;">
+      Alert cooldown:
+      <input type="number" id="alert-cooldown" min="0" max="1440" value="{{ alert_cooldown_minutes }}" style="width:5rem;">
+      minutes per source IP
+    </label>
+    <p class="muted" style="font-size:.8rem; margin:0 0 .8rem;">
+      A sustained burst from one IP notifies (Discord + Decisions tab) at most once per this many minutes. 0 alerts on every flagged row.
+    </p>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <button class="btn" id="cooldown-save">Save</button>
+      <span id="cooldown-save-status" class="muted" style="font-size:.85rem;"></span>
+    </div>
+  </fieldset>
 </article>
 
 <h2>Login credentials</h2>
@@ -214,6 +274,100 @@ if (discordToggle) {
     }
   };
 }
+
+function renderHostnames(names) {
+  const list = document.getElementById('hostname-list');
+  list.innerHTML = '';
+  if (!names.length) {
+    list.innerHTML = '<p class="muted" style="margin:0;">No hostnames watched yet.</p>';
+    return;
+  }
+  for (const h of names) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:.6rem; padding:.3rem 0;';
+    const span = document.createElement('span');
+    span.textContent = h;
+    const btn = document.createElement('button');
+    btn.className = 'row-btn';
+    btn.textContent = 'Remove';
+    btn.onclick = () => removeHostname(h);
+    row.appendChild(span);
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+}
+
+async function removeHostname(name) {
+  const status = document.getElementById('hostname-status');
+  status.textContent = 'removing…';
+  try {
+    const res = await fetch(`/api/access-hostnames/${encodeURIComponent(name)}/delete`, { method: 'POST' });
+    const data = await res.json();
+    renderHostnames(data.hostnames);
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Remove failed';
+  }
+}
+
+renderHostnames({{ watched_hostnames|tojson }});
+
+const hostnameAddBtn = document.getElementById('hostname-add');
+hostnameAddBtn.onclick = async () => {
+  const input = document.getElementById('hostname-input');
+  const status = document.getElementById('hostname-status');
+  const hostname = input.value.trim();
+  if (!hostname) { status.textContent = 'Enter a hostname first'; return; }
+  hostnameAddBtn.disabled = true;
+  status.textContent = 'adding…';
+  try {
+    const res = await fetch('/api/access-hostnames', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'Add failed';
+    } else {
+      renderHostnames(data.hostnames);
+      input.value = '';
+      status.textContent = 'Added ✓';
+      setTimeout(() => { status.textContent = ''; }, 2000);
+    }
+  } catch (e) {
+    status.textContent = 'Add failed';
+  } finally {
+    hostnameAddBtn.disabled = false;
+  }
+};
+
+document.getElementById('cooldown-save').onclick = async () => {
+  const btn = document.getElementById('cooldown-save');
+  const status = document.getElementById('cooldown-save-status');
+  const minutes = document.getElementById('alert-cooldown').value;
+  btn.disabled = true;
+  status.textContent = 'saving…';
+  try {
+    const res = await fetch('/api/access-alert-cooldown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minutes }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'Save failed';
+    } else {
+      document.getElementById('alert-cooldown').value = data.minutes;
+      status.textContent = 'Saved ✓';
+      setTimeout(() => { status.textContent = ''; }, 2000);
+    }
+  } catch (e) {
+    status.textContent = 'Save failed';
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 document.getElementById('cred-save').onclick = async () => {
   const btn = document.getElementById('cred-save');
