@@ -64,6 +64,89 @@ def test_decisions_page_shows_buttons_by_patchability():
     assert "No pull-based patch" in body  # the digest-pinned one explains instead
 
 
+def test_decisions_page_lists_flagged_unacknowledged_access_events():
+    with db_module.SessionLocal() as session:
+        session.add_all(
+            [
+                db_module.AccessEvent(
+                    hostname="nc.example.com",
+                    client_ip="203.0.113.5",
+                    path="/login",
+                    status_code=401,
+                    request_count=6,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=True,
+                ),
+                db_module.AccessEvent(
+                    hostname="nc.example.com",
+                    client_ip="203.0.113.6",
+                    path="/login",
+                    status_code=401,
+                    request_count=6,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=True,
+                    acknowledged=True,  # already handled — should not show
+                ),
+                db_module.AccessEvent(
+                    hostname="nc.example.com",
+                    client_ip="203.0.113.7",
+                    path="/photos",
+                    status_code=200,
+                    request_count=1,
+                    window_start=dt.datetime(2026, 8, 22, 10, 0),
+                    window_end=dt.datetime(2026, 8, 22, 10, 1),
+                    flagged=False,  # not flagged — should not show
+                ),
+            ]
+        )
+        session.commit()
+
+    body = _client().get("/decisions", headers=_auth_header()).data.decode()
+    assert "Flagged traffic (1)" in body
+    assert "203.0.113.5" in body
+    assert "203.0.113.6" not in body
+    assert "203.0.113.7" not in body
+
+
+def test_acknowledge_access_event_requires_auth():
+    assert _client().post("/api/access-events/1/acknowledge").status_code == 401
+
+
+def test_acknowledge_access_event_hides_it_from_decisions():
+    with db_module.SessionLocal() as session:
+        event = db_module.AccessEvent(
+            hostname="nc.example.com",
+            client_ip="203.0.113.5",
+            path="/login",
+            status_code=401,
+            request_count=6,
+            window_start=dt.datetime(2026, 8, 22, 10, 0),
+            window_end=dt.datetime(2026, 8, 22, 10, 1),
+            flagged=True,
+        )
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+        event_id = event.id
+
+    res = _client().post(f"/api/access-events/{event_id}/acknowledge", headers=_auth_header())
+    assert res.status_code == 200
+
+    body = _client().get("/decisions", headers=_auth_header()).data.decode()
+    assert "Flagged traffic" not in body
+
+    # acknowledging is a dismissal, not a delete — the row itself must survive
+    with db_module.SessionLocal() as session:
+        assert session.get(db_module.AccessEvent, event_id) is not None
+
+
+def test_acknowledge_access_event_404s_when_missing():
+    res = _client().post("/api/access-events/999999/acknowledge", headers=_auth_header())
+    assert res.status_code == 404
+
+
 def test_decision_action_runs_resolve(monkeypatch):
     done = threading.Event()
     calls = []

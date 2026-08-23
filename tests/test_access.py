@@ -90,6 +90,51 @@ def test_ingest_recent_stores_groups_and_flags_suspicious_ones(monkeypatch):
         assert by_ip["203.0.113.9"].flagged is False
 
 
+def test_ingest_recent_calls_on_flagged_only_for_newly_stored_flagged_rows(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
+    groups = [
+        _group(client_ip="203.0.113.5", path="/login", status_code=401, request_count=6),  # flagged
+        _group(client_ip="203.0.113.9", path="/photos/thumb", status_code=200, request_count=3),  # not flagged
+    ]
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: groups)
+    seen = []
+
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 5), on_flagged=seen.append)
+
+    assert len(seen) == 1
+    assert seen[0].client_ip == "203.0.113.5"
+
+
+def test_ingest_recent_does_not_recall_on_flagged_for_already_stored_rows(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
+    flagged_group = _group(client_ip="203.0.113.5", path="/login", status_code=401, request_count=6)
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [flagged_group])
+    seen = []
+
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 5), on_flagged=seen.append)
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 6), on_flagged=seen.append)  # overlaps the same minute
+
+    assert len(seen) == 1
+
+
+def test_ingest_recent_survives_a_raising_on_flagged_callback(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
+    flagged_group = _group(client_ip="203.0.113.5", path="/login", status_code=401, request_count=6)
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [flagged_group])
+
+    def _boom(event):
+        raise RuntimeError("discord is down")
+
+    added = access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 5), on_flagged=_boom)
+
+    assert added == 1
+    with db.SessionLocal() as session:
+        assert len(session.scalars(select(db.AccessEvent)).all()) == 1
+
+
 def test_ingest_recent_does_not_duplicate_overlapping_groups(monkeypatch):
     monkeypatch.setattr(access, "get_settings", _fake_settings)
     monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])

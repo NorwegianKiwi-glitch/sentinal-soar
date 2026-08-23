@@ -205,6 +205,10 @@ class AccessEvent(Base):
     window_start: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
     window_end: Mapped[dt.datetime] = mapped_column(DateTime, nullable=False)
     flagged: Mapped[bool] = mapped_column(default=False)
+    # Dismissed from the Decisions page — see routes.py's acknowledge endpoint.
+    # Independent of `flagged`: acknowledging doesn't reclassify the traffic,
+    # it just stops asking for a look at this specific row.
+    acknowledged: Mapped[bool] = mapped_column(default=False)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 
@@ -230,4 +234,7 @@ def _apply_migrations() -> None:
         )
         conn.execute(
             text("ALTER TABLE pending_decisions ADD COLUMN IF NOT EXISTS proposed_major_image VARCHAR(255)")
+        )
+        conn.execute(
+            text("ALTER TABLE access_events ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT FALSE")
         )

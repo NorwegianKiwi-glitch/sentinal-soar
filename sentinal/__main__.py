@@ -46,7 +46,12 @@ def main() -> None:
     threading.Thread(target=_run_scheduler, daemon=True, name="scheduler").start()
     # No-op (logs and returns) when Cloudflare isn't configured — see
     # config.Settings.cloudflare_configured.
-    threading.Thread(target=access.run_poller, daemon=True, name="access-poller").start()
+    threading.Thread(
+        target=access.run_poller,
+        kwargs={"on_flagged": bot_module.post_access_alert_threadsafe},
+        daemon=True,
+        name="access-poller",
+    ).start()
     if get_settings().discord_enabled:
         # The bot owns the asyncio event loop on the main thread; web is a daemon.
         threading.Thread(target=_run_web, daemon=True, name="web").start()

@@ -58,8 +58,13 @@ def _last_window_end() -> dt.datetime | None:
         ).first()
 
 
-def ingest_recent(now: dt.datetime | None = None) -> int:
+def ingest_recent(now: dt.datetime | None = None, on_flagged=None) -> int:
     """Fetch traffic since the last ingest (with overlap) and store new rows.
+
+    `on_flagged`, if given, is called once per newly-stored row that the
+    heuristic flagged (e.g. bot.post_access_alert_threadsafe) — never for a
+    row already seen on an earlier, overlapping poll. A callback failure is
+    caught per-row so one bad notification can't lose the rest.
 
     Returns the number of newly-stored rows. Never raises: cloudflare.fetch_traffic
     already degrades to [] on API failure, and a DB hiccup here is caught too —
@@ -81,46 +86,56 @@ def ingest_recent(now: dt.datetime | None = None) -> int:
             since=since,
             until=now,
         )
-        return _store(groups)
+        new_rows = _store(groups)
     except Exception:
         log.exception("Cloudflare access-traffic ingest failed")
         return 0
+    if on_flagged is not None:
+        for row in new_rows:
+            if not row.flagged:
+                continue
+            try:
+                on_flagged(row)
+            except Exception:
+                log.exception("on_flagged callback failed for access event %s", row.id)
+    return len(new_rows)
 
 
-def _store(groups: list[cloudflare.TrafficGroup]) -> int:
+def _store(groups: list[cloudflare.TrafficGroup]) -> list[db.AccessEvent]:
     if not groups:
-        return 0
+        return []
     with db.SessionLocal() as session:
         window_start = min(g.minute for g in groups)
         existing = {
             (row.hostname, row.client_ip, row.path, row.status_code, row.window_start)
             for row in session.scalars(select(db.AccessEvent).where(db.AccessEvent.window_start >= window_start))
         }
-        added = 0
+        new_rows = []
         for g in groups:
             key = (g.hostname, g.client_ip, g.path, g.status_code, g.minute)
             if key in existing:
                 continue
-            session.add(
-                db.AccessEvent(
-                    hostname=g.hostname,
-                    client_ip=g.client_ip,
-                    country=g.country,
-                    path=g.path,
-                    status_code=g.status_code,
-                    request_count=g.request_count,
-                    window_start=g.minute,
-                    window_end=g.minute + _BUCKET,
-                    flagged=is_suspicious(g.path, g.status_code, g.request_count),
-                )
+            row = db.AccessEvent(
+                hostname=g.hostname,
+                client_ip=g.client_ip,
+                country=g.country,
+                path=g.path,
+                status_code=g.status_code,
+                request_count=g.request_count,
+                window_start=g.minute,
+                window_end=g.minute + _BUCKET,
+                flagged=is_suspicious(g.path, g.status_code, g.request_count),
             )
+            session.add(row)
+            new_rows.append(row)
             existing.add(key)
-            added += 1
         session.commit()
-        return added
+        for row in new_rows:
+            session.refresh(row)  # populate row.id, needed by callers of ingest_recent
+        return new_rows
 
 
-def run_poller() -> None:
+def run_poller(on_flagged=None) -> None:
     """Loop forever, ingesting on a fixed interval from config.
 
     Simpler than schedule.py's Event-based loop on purpose: this interval has
@@ -133,7 +148,7 @@ def run_poller() -> None:
         return
     while True:
         try:
-            added = ingest_recent()
+            added = ingest_recent(on_flagged=on_flagged)
             if added:
                 log.info("Ingested %d new Cloudflare access-traffic rows", added)
         except Exception:

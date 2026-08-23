@@ -51,7 +51,12 @@ def decisions():
             {"d": d, "patch": patching.describe_patch(d.image_name, d.proposed_image, d.proposed_major_image)}
             for d in rows
         ]
-    return render_template("decisions.html", items=items, active="decisions")
+        flagged_events = session.scalars(
+            select(db.AccessEvent)
+            .where(db.AccessEvent.flagged.is_(True), db.AccessEvent.acknowledged.is_(False))
+            .order_by(db.AccessEvent.window_start.desc())
+        ).all()
+    return render_template("decisions.html", items=items, flagged_events=flagged_events, active="decisions")
 
 
 @bp.get("/logs")
@@ -384,6 +389,17 @@ def delete_exception(exception_id: int):
         session.delete(exception)
         session.commit()
     return jsonify({"status": "deleted"})
+
+
+@bp.post("/api/access-events/<int:event_id>/acknowledge")
+def acknowledge_access_event(event_id: int):
+    with db.SessionLocal() as session:
+        event = session.get(db.AccessEvent, event_id)
+        if event is None:
+            return jsonify({"error": "not found"}), 404
+        event.acknowledged = True
+        session.commit()
+    return jsonify({"status": "acknowledged"})
 
 
 @bp.post("/api/access-events/<int:event_id>/delete")
