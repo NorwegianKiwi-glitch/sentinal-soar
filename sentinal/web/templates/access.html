@@ -80,10 +80,10 @@
 </form>
 <div style="overflow-x:auto;">
 <table>
-  <thead><tr><th>Time (UTC)</th><th>Hostname</th><th>Client IP</th><th>Country</th><th>Path</th><th>Status</th><th>Requests</th><th></th></tr></thead>
+  <thead><tr><th>Time (UTC)</th><th>Hostname</th><th>Client IP</th><th>Country</th><th>Path</th><th>Status</th><th>Requests</th><th></th><th></th></tr></thead>
   <tbody>
   {% for e in events %}
-    <tr>
+    <tr data-row="{{ e.id }}">
       <td>{{ e.window_start.strftime("%Y-%m-%d %H:%M") }}</td>
       <td>{{ e.hostname }}</td>
       <td>{{ e.client_ip }}</td>
@@ -92,11 +92,20 @@
       <td>{{ e.status_code }}</td>
       <td>{{ e.request_count }}</td>
       <td>{% if e.flagged %}<span class="badge FAILED">flagged</span>{% endif %}</td>
+      <td><button class="row-btn" onclick="deleteEvent({{ e.id }})">Delete</button></td>
     </tr>
   {% else %}
-    <tr><td colspan="8" class="muted">No access events{{ " yet — the poller ingests every few minutes." if (cloudflare_configured and watched_hostnames) else "." }}</td></tr>
+    <tr><td colspan="9" class="muted">No access events{{ " yet — the poller ingests every few minutes." if (cloudflare_configured and watched_hostnames) else "." }}</td></tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function deleteEvent(id) {
+  await fetch(`/api/access-events/${id}/delete`, { method: 'POST' });
+  document.querySelector(`[data-row="${id}"]`).remove();
+}
+</script>
 {% endblock %}

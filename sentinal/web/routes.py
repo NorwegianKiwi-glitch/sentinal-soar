@@ -386,6 +386,19 @@ def delete_exception(exception_id: int):
     return jsonify({"status": "deleted"})
 
 
+@bp.post("/api/access-events/<int:event_id>/delete")
+def delete_access_event(event_id: int):
+    # Hard delete, not soft (unlike ScanLog/archive_log): access events are
+    # ingested traffic data, not an audit trail of actions Sentinal took.
+    with db.SessionLocal() as session:
+        event = session.get(db.AccessEvent, event_id)
+        if event is None:
+            return jsonify({"error": "not found"}), 404
+        session.delete(event)
+        session.commit()
+    return jsonify({"status": "deleted"})
+
+
 def _list_containers_for_settings() -> tuple[list[dict], str | None]:
     excluded = container_selection.excluded_names()
     try:

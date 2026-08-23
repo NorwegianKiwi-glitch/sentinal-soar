@@ -154,6 +154,35 @@ def test_access_page_shows_no_hostnames_hint_when_configured_but_empty(monkeypat
     assert "No hostnames are being watched yet" in body
 
 
+def test_delete_access_event_requires_auth():
+    assert _client().post("/api/access-events/1/delete").status_code == 401
+
+
+def test_delete_access_event_removes_it_and_is_idempotent_on_missing():
+    with db_module.SessionLocal() as session:
+        event = db_module.AccessEvent(
+            hostname="nextcloud.example.com",
+            client_ip="203.0.113.5",
+            path="/login",
+            status_code=401,
+            request_count=6,
+            window_start=dt.datetime(2026, 8, 22, 10, 0),
+            window_end=dt.datetime(2026, 8, 22, 10, 1),
+        )
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+        event_id = event.id
+
+    res = _client().post(f"/api/access-events/{event_id}/delete", headers=_auth_header())
+    assert res.status_code == 200
+    with db_module.SessionLocal() as session:
+        assert session.get(db_module.AccessEvent, event_id) is None
+
+    res = _client().post(f"/api/access-events/{event_id}/delete", headers=_auth_header())
+    assert res.status_code == 404
+
+
 def test_settings_page_lists_watched_hostnames():
     from sentinal import hostnames
 
