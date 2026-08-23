@@ -148,6 +148,45 @@ def test_access_page_filters_by_flagged():
     assert "203.0.113.9" not in body
 
 
+def test_access_page_shows_no_hostnames_hint_when_configured_but_empty(monkeypatch):
+    monkeypatch.setattr("sentinal.web.routes.get_settings", lambda: type("S", (), {"cloudflare_configured": True})())
+    body = _client().get("/access", headers=_auth_header()).data.decode()
+    assert "No hostnames are being watched yet" in body
+
+
+def test_settings_page_lists_watched_hostnames():
+    from sentinal import hostnames
+
+    hostnames.add_hostname("cloud.example.com")
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "cloud.example.com" in body
+
+
+def test_add_access_hostname_persists_and_normalizes():
+    res = _client().post(
+        "/api/access-hostnames",
+        headers=_auth_header(),
+        json={"hostname": "HTTPS://Cloud.Example.com/path"},
+    )
+    assert res.status_code == 200
+    assert res.get_json()["hostnames"] == ["cloud.example.com"]
+
+
+def test_add_access_hostname_rejects_invalid():
+    res = _client().post("/api/access-hostnames", headers=_auth_header(), json={"hostname": "not a hostname"})
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+
+def test_delete_access_hostname_removes_it():
+    from sentinal import hostnames
+
+    hostnames.add_hostname("cloud.example.com")
+    res = _client().post("/api/access-hostnames/cloud.example.com/delete", headers=_auth_header())
+    assert res.status_code == 200
+    assert res.get_json()["hostnames"] == []
+
+
 def test_archive_log_is_soft_delete_not_hard_delete():
     with db_module.SessionLocal() as session:
         log = db_module.ScanLog(image_name="nginx:latest", action_taken="CLEAN", log_payload={"details": "test"})
@@ -317,7 +356,7 @@ def test_settings_page_shows_discord_toggle_when_connected():
 def test_settings_page_hides_toggle_when_discord_not_connected(monkeypatch):
     from sentinal.web import routes
 
-    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(discord_enabled=False))
+    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(discord_enabled=False, cloudflare_configured=False))
 
     body = _client().get("/settings", headers=_auth_header()).data.decode()
     assert "isn't connected" in body

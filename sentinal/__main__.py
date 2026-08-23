@@ -7,7 +7,7 @@ from waitress import serve
 
 from . import access
 from . import bot as bot_module
-from . import pipeline, schedule
+from . import hostnames, pipeline, schedule
 from .config import get_settings
 from .db import init_db
 from .web import create_app
@@ -42,9 +42,10 @@ def _run_scheduler() -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     init_db()
+    hostnames.seed_from_env()
     threading.Thread(target=_run_scheduler, daemon=True, name="scheduler").start()
     # No-op (logs and returns) when Cloudflare isn't configured — see
-    # config.Settings.cloudflare_enabled.
+    # config.Settings.cloudflare_configured.
     threading.Thread(target=access.run_poller, daemon=True, name="access-poller").start()
     if get_settings().discord_enabled:
         # The bot owns the asyncio event loop on the main thread; web is a daemon.

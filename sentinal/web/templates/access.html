@@ -18,8 +18,10 @@
   .bar-value { width: 3.2rem; text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 </style>
 <h2>Access traffic</h2>
-{% if not cloudflare_enabled %}
-<p class="muted">Cloudflare access ingestion isn't configured — set CLOUDFLARE_API_TOKEN, CLOUDFLARE_ZONE_ID, and CLOUDFLARE_HOSTNAMES to see edge traffic here.</p>
+{% if not cloudflare_configured %}
+<p class="muted">Cloudflare access ingestion isn't configured — set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ZONE_ID to see edge traffic here.</p>
+{% elif not watched_hostnames %}
+<p class="muted">No hostnames are being watched yet — add one from the <a href="{{ url_for('dashboard.settings_page') }}">Settings</a> page.</p>
 {% else %}
 <p class="muted">Edge traffic to your watched hostnames via Cloudflare — real client IPs, not what each app's own log records today. "Flagged" means volume or repeated-failure activity against a login-shaped path, not a confirmed failed login: Cloudflare can't see inside an app's response.</p>
 {% endif %}
@@ -92,7 +94,7 @@
       <td>{% if e.flagged %}<span class="badge FAILED">flagged</span>{% endif %}</td>
     </tr>
   {% else %}
-    <tr><td colspan="8" class="muted">No access events{{ " yet — the poller ingests every few minutes." if cloudflare_enabled else "." }}</td></tr>
+    <tr><td colspan="8" class="muted">No access events{{ " yet — the poller ingests every few minutes." if (cloudflare_configured and watched_hostnames) else "." }}</td></tr>
   {% endfor %}
   </tbody>
 </table>

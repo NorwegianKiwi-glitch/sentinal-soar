@@ -17,7 +17,7 @@ import time
 
 from sqlalchemy import select
 
-from . import cloudflare, db
+from . import cloudflare, db, hostnames
 from .config import get_settings
 
 log = logging.getLogger(__name__)
@@ -66,7 +66,10 @@ def ingest_recent(now: dt.datetime | None = None) -> int:
     a bad tick just means the next one covers the gap via the overlap window.
     """
     settings = get_settings()
-    if not settings.cloudflare_enabled:
+    if not settings.cloudflare_configured:
+        return 0
+    watched = hostnames.get_hostnames()
+    if not watched:
         return 0
     now = now or dt.datetime.utcnow()
     since = (_last_window_end() or now - dt.timedelta(minutes=settings.cloudflare_poll_minutes)) - _OVERLAP
@@ -74,7 +77,7 @@ def ingest_recent(now: dt.datetime | None = None) -> int:
         groups = cloudflare.fetch_traffic(
             api_token=settings.cloudflare_api_token,
             zone_id=settings.cloudflare_zone_id,
-            hostnames=settings.cloudflare_hostname_list,
+            hostnames=watched,
             since=since,
             until=now,
         )
@@ -125,7 +128,7 @@ def run_poller() -> None:
     to wake it early — plain time.sleep is enough.
     """
     settings = get_settings()
-    if not settings.cloudflare_enabled:
+    if not settings.cloudflare_configured:
         log.info("Cloudflare access ingestion not configured — skipping.")
         return
     while True:

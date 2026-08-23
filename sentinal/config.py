@@ -44,10 +44,12 @@ class Settings:
         return bool(self.discord_bot_token and self.discord_channel_id)
 
     @property
-    def cloudflare_enabled(self) -> bool:
-        """Cloudflare access-traffic ingestion is optional — needs an API
-        token, the zone it should query, and at least one hostname to watch."""
-        return bool(self.cloudflare_api_token and self.cloudflare_zone_id and self.cloudflare_hostname_list)
+    def cloudflare_configured(self) -> bool:
+        """Whether Cloudflare API credentials are present. Deliberately does
+        NOT check for any watched hostnames — that list is DB-authoritative
+        (see hostnames.py) and editable from Settings at runtime, so it can
+        legitimately be empty even when credentials are configured."""
+        return bool(self.cloudflare_api_token and self.cloudflare_zone_id)
 
     @property
     def cloudflare_hostname_list(self) -> list[str]:

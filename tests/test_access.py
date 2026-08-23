@@ -4,7 +4,7 @@ import datetime as dt
 
 from sqlalchemy import select
 
-from sentinal import access, cloudflare, db
+from sentinal import access, cloudflare, db, hostnames
 
 
 def _group(**kw):
@@ -47,24 +47,33 @@ def test_does_not_flag_ordinary_successful_login_traffic():
 # --- ingest_recent / _store ---------------------------------------------------
 
 
+def _fake_settings():
+    return type(
+        "S",
+        (),
+        {
+            "cloudflare_configured": True,
+            "cloudflare_api_token": "tok",
+            "cloudflare_zone_id": "zone",
+            "cloudflare_poll_minutes": 5,
+        },
+    )()
+
+
 def test_ingest_recent_is_noop_when_not_configured(monkeypatch):
-    monkeypatch.setattr(access, "get_settings", lambda: type("S", (), {"cloudflare_enabled": False})())
+    monkeypatch.setattr(access, "get_settings", lambda: type("S", (), {"cloudflare_configured": False})())
+    assert access.ingest_recent() == 0
+
+
+def test_ingest_recent_is_noop_when_no_hostnames_watched(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: [])
     assert access.ingest_recent() == 0
 
 
 def test_ingest_recent_stores_groups_and_flags_suspicious_ones(monkeypatch):
-    settings = type(
-        "S",
-        (),
-        {
-            "cloudflare_enabled": True,
-            "cloudflare_api_token": "tok",
-            "cloudflare_zone_id": "zone",
-            "cloudflare_hostname_list": ["nextcloud.example.com"],
-            "cloudflare_poll_minutes": 5,
-        },
-    )()
-    monkeypatch.setattr(access, "get_settings", lambda: settings)
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
     groups = [
         _group(client_ip="203.0.113.5", path="/login", status_code=401, request_count=6),
         _group(client_ip="203.0.113.9", path="/photos/thumb", status_code=200, request_count=3),
@@ -82,18 +91,8 @@ def test_ingest_recent_stores_groups_and_flags_suspicious_ones(monkeypatch):
 
 
 def test_ingest_recent_does_not_duplicate_overlapping_groups(monkeypatch):
-    settings = type(
-        "S",
-        (),
-        {
-            "cloudflare_enabled": True,
-            "cloudflare_api_token": "tok",
-            "cloudflare_zone_id": "zone",
-            "cloudflare_hostname_list": ["nextcloud.example.com"],
-            "cloudflare_poll_minutes": 5,
-        },
-    )()
-    monkeypatch.setattr(access, "get_settings", lambda: settings)
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
     group = _group()
     monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [group])
 
@@ -107,18 +106,8 @@ def test_ingest_recent_does_not_duplicate_overlapping_groups(monkeypatch):
 
 
 def test_ingest_recent_degrades_gracefully_on_store_failure(monkeypatch):
-    settings = type(
-        "S",
-        (),
-        {
-            "cloudflare_enabled": True,
-            "cloudflare_api_token": "tok",
-            "cloudflare_zone_id": "zone",
-            "cloudflare_hostname_list": ["nextcloud.example.com"],
-            "cloudflare_poll_minutes": 5,
-        },
-    )()
-    monkeypatch.setattr(access, "get_settings", lambda: settings)
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
     monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [_group()])
 
     def _boom(groups):

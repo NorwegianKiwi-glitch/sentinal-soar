@@ -148,6 +148,34 @@ class DashboardCredentials(Base):
     )
 
 
+class WatchedHostname(Base):
+    """A hostname the Access page's Cloudflare poller watches — see hostnames.py.
+    Seeded from CLOUDFLARE_HOSTNAMES once (see AccessConfig below for the
+    seeded marker), then DB-authoritative: add/remove from the Settings page
+    take effect without touching .env or redeploying."""
+
+    __tablename__ = "watched_hostnames"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hostname: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class AccessConfig(Base):
+    """Single row (id=1): tracks whether watched_hostnames has ever been
+    seeded from CLOUDFLARE_HOSTNAMES, independent of whether the list is
+    currently empty. Without a separate marker, "seeded" would have to mean
+    "the table has rows," which would make seed_from_env() re-add the env
+    var's hostnames the next time it's called (i.e. the next process
+    restart) after a user deliberately removed every hostname — this row
+    is what lets a deliberate empty list actually stick."""
+
+    __tablename__ = "access_config"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hostnames_seeded: Mapped[bool] = mapped_column(default=False)
+
+
 class AccessEvent(Base):
     """An aggregated slice of Cloudflare edge traffic to one watched hostname.
 

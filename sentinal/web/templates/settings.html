@@ -90,6 +90,25 @@
   {% endif %}
 </article>
 
+<h2>Access hostnames</h2>
+<article class="card" style="max-width:560px;">
+  {% if not cloudflare_configured %}
+    <p class="muted" style="margin-top:0;">
+      Cloudflare access ingestion isn't configured — set <code>CLOUDFLARE_API_TOKEN</code> and
+      <code>CLOUDFLARE_ZONE_ID</code> to enable it. Hostnames added below take effect once those are set.
+    </p>
+  {% endif %}
+  <p class="muted" style="font-size:.85rem; margin-top:0;">
+    Hostnames the <a href="{{ url_for('dashboard.access_page') }}">Access page</a>'s Cloudflare poller watches for traffic.
+  </p>
+  <div id="hostname-list" style="margin-bottom:1rem;"></div>
+  <div style="display:flex; gap:.6rem; align-items:center;">
+    <input type="text" id="hostname-input" placeholder="e.g. cloud.example.com" style="flex:1;">
+    <button class="btn" id="hostname-add">Add</button>
+  </div>
+  <span id="hostname-status" class="muted" style="font-size:.85rem; display:block; margin-top:.5rem;"></span>
+</article>
+
 <h2>Login credentials</h2>
 <article class="card" style="max-width:560px;">
   <label style="display:block; margin-bottom:.6rem;">
@@ -214,6 +233,73 @@ if (discordToggle) {
     }
   };
 }
+
+function renderHostnames(names) {
+  const list = document.getElementById('hostname-list');
+  list.innerHTML = '';
+  if (!names.length) {
+    list.innerHTML = '<p class="muted" style="margin:0;">No hostnames watched yet.</p>';
+    return;
+  }
+  for (const h of names) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:.6rem; padding:.3rem 0;';
+    const span = document.createElement('span');
+    span.textContent = h;
+    const btn = document.createElement('button');
+    btn.className = 'row-btn';
+    btn.textContent = 'Remove';
+    btn.onclick = () => removeHostname(h);
+    row.appendChild(span);
+    row.appendChild(btn);
+    list.appendChild(row);
+  }
+}
+
+async function removeHostname(name) {
+  const status = document.getElementById('hostname-status');
+  status.textContent = 'removing…';
+  try {
+    const res = await fetch(`/api/access-hostnames/${encodeURIComponent(name)}/delete`, { method: 'POST' });
+    const data = await res.json();
+    renderHostnames(data.hostnames);
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Remove failed';
+  }
+}
+
+renderHostnames({{ watched_hostnames|tojson }});
+
+const hostnameAddBtn = document.getElementById('hostname-add');
+hostnameAddBtn.onclick = async () => {
+  const input = document.getElementById('hostname-input');
+  const status = document.getElementById('hostname-status');
+  const hostname = input.value.trim();
+  if (!hostname) { status.textContent = 'Enter a hostname first'; return; }
+  hostnameAddBtn.disabled = true;
+  status.textContent = 'adding…';
+  try {
+    const res = await fetch('/api/access-hostnames', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostname }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = data.error || 'Add failed';
+    } else {
+      renderHostnames(data.hostnames);
+      input.value = '';
+      status.textContent = 'Added ✓';
+      setTimeout(() => { status.textContent = ''; }, 2000);
+    }
+  } catch (e) {
+    status.textContent = 'Add failed';
+  } finally {
+    hostnameAddBtn.disabled = false;
+  }
+};
 
 document.getElementById('cred-save').onclick = async () => {
   const btn = document.getElementById('cred-save');

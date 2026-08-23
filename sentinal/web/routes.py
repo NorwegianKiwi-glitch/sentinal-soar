@@ -7,7 +7,7 @@ import threading
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import Integer, cast, func, select
 
-from .. import container_selection, credentials, db, docker_client, notifications, patching, pipeline, schedule
+from .. import container_selection, credentials, db, docker_client, hostnames, notifications, patching, pipeline, schedule
 from ..config import get_settings
 
 log = logging.getLogger(__name__)
@@ -138,7 +138,8 @@ def access_page():
         events=rows,
         filters=filters,
         only_flagged=only_flagged,
-        cloudflare_enabled=get_settings().cloudflare_enabled,
+        cloudflare_configured=get_settings().cloudflare_configured,
+        watched_hostnames=hostnames.get_hostnames(),
         total_requests=total_requests,
         unique_ip_count=unique_ip_count,
         flagged_count=flagged_count,
@@ -175,6 +176,8 @@ def settings_page():
         containers_error=containers_error,
         discord_connected=get_settings().discord_enabled,
         discord_notifications_enabled=notifications.enabled(),
+        cloudflare_configured=get_settings().cloudflare_configured,
+        watched_hostnames=hostnames.get_hostnames(),
         active="settings",
     )
 
@@ -340,6 +343,21 @@ def update_credentials():
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"username": creds.username})
+
+
+@bp.post("/api/access-hostnames")
+def add_access_hostname():
+    data = request.get_json(silent=True) or request.form
+    try:
+        watched = hostnames.add_hostname(data.get("hostname", ""))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"hostnames": watched})
+
+
+@bp.post("/api/access-hostnames/<path:hostname>/delete")
+def delete_access_hostname(hostname: str):
+    return jsonify({"hostnames": hostnames.remove_hostname(hostname)})
 
 
 # --- log / exception mutations ---------------------------------------------
