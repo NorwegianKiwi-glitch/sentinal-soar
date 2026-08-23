@@ -450,6 +450,43 @@ def _list_containers_for_settings() -> tuple[list[dict], str | None]:
     return containers, None
 
 
+_AI_PROVIDER_LABELS = {
+    "gemini": "Gemini",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic (Claude)",
+    "openai_compatible": "OpenAI-compatible (custom endpoint)",
+}
+
+
+def _ai_provider_status(settings) -> dict:
+    """Which vars the *currently selected* AI_PROVIDER needs — the other
+    three providers' vars aren't shown, since only one is ever active. Always
+    "connected": get_settings() already refuses to boot if the selected
+    provider's required vars are missing (see config._require_ai_provider_configured)."""
+    provider = settings.ai_provider
+    if provider == "gemini":
+        provider_vars = [("GEMINI_API_KEY", bool(settings.gemini_api_key))]
+    elif provider == "openai":
+        provider_vars = [
+            ("OPENAI_API_KEY", bool(settings.openai_api_key)),
+            ("OPENAI_MODEL", bool(settings.openai_model)),
+        ]
+    elif provider == "anthropic":
+        provider_vars = [("ANTHROPIC_API_KEY", bool(settings.anthropic_api_key))]
+    else:  # openai_compatible — AI_API_KEY is optional, see ai.py
+        provider_vars = [
+            ("AI_BASE_URL", bool(settings.ai_base_url)),
+            ("AI_MODEL", bool(settings.ai_model)),
+            ("AI_API_KEY", bool(settings.ai_api_key)),
+        ]
+    return {
+        "name": f"AI triage — {_AI_PROVIDER_LABELS.get(provider, provider)}",
+        "required": True,
+        "connected": True,
+        "vars": provider_vars,
+    }
+
+
 def _setup_status() -> list[dict]:
     """Read-only summary of which integrations' env vars are set — never the
     values themselves, just presence. Purely a setup aid; nothing here is
@@ -458,12 +495,7 @@ def _setup_status() -> list[dict]:
     particular) can't be hot-swapped without restarting the container."""
     settings = get_settings()
     return [
-        {
-            "name": "Gemini (AI triage)",
-            "required": True,
-            "connected": bool(settings.gemini_api_key),
-            "vars": [("GEMINI_API_KEY", bool(settings.gemini_api_key))],
-        },
+        _ai_provider_status(settings),
         {
             "name": "Discord notifications",
             "required": False,

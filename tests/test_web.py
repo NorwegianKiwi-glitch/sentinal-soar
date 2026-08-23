@@ -377,6 +377,35 @@ def test_settings_page_setup_status_shows_cloudflare_not_configured():
     assert "not configured" in body
 
 
+def test_settings_page_setup_status_reflects_the_selected_ai_provider(monkeypatch):
+    monkeypatch.setattr(
+        "sentinal.web.routes.get_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "ai_provider": "openai_compatible",
+                "ai_base_url": "http://ollama:11434/v1",
+                "ai_model": "llama3",
+                "ai_api_key": "",
+                "discord_enabled": False,
+                "discord_bot_token": "",
+                "discord_guild_id": 0,
+                "discord_channel_id": 0,
+                "cloudflare_configured": False,
+                "cloudflare_api_token": "",
+                "cloudflare_zone_id": "",
+            },
+        )(),
+    )
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "AI triage — OpenAI-compatible (custom endpoint)" in body
+    assert "<code>AI_BASE_URL</code> — set" in body
+    assert "<code>AI_MODEL</code> — set" in body
+    assert "<code>AI_API_KEY</code> — not set" in body
+    assert "<code>GEMINI_API_KEY</code>" not in body
+
+
 def test_settings_page_setup_status_never_shows_secret_values(monkeypatch):
     monkeypatch.setattr(
         "sentinal.web.routes.get_settings",
@@ -384,6 +413,7 @@ def test_settings_page_setup_status_never_shows_secret_values(monkeypatch):
             "S",
             (),
             {
+                "ai_provider": "gemini",
                 "gemini_api_key": "super-secret-gemini-key",
                 "discord_bot_token": "super-secret-bot-token",
                 "discord_guild_id": 123,
@@ -545,6 +575,7 @@ def test_settings_page_hides_toggle_when_discord_not_connected(monkeypatch):
         lambda: SimpleNamespace(
             discord_enabled=False,
             cloudflare_configured=False,
+            ai_provider="gemini",
             gemini_api_key="test-key",
             discord_bot_token="",
             discord_guild_id=0,
