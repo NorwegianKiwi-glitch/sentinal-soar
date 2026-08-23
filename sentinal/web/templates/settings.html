@@ -1,6 +1,31 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
 {% block content %}
+<h2>Setup status</h2>
+<article class="card" style="max-width:560px;">
+  <p class="muted" style="font-size:.85rem; margin-top:0;">
+    Set via environment variables in <code>.env</code> next to <code>docker-compose.yml</code> — values
+    are never shown here, only whether each is set. Editing <code>.env</code> requires a container
+    restart (<code>docker compose up -d</code>) to take effect.
+  </p>
+  {% for group in setup_status %}
+  <div style="margin-bottom:{{ '0' if loop.last else '1rem' }};">
+    <div style="display:flex; align-items:center; gap:.5rem; flex-wrap:wrap;">
+      <strong>{{ group.name }}</strong>
+      <span class="muted" style="font-size:.78rem;">({{ 'required' if group.required else 'optional' }})</span>
+      <span class="badge {{ 'PATCHED' if group.connected else 'AUTO_SKIP' }}" style="margin-left:auto;">
+        {{ 'connected' if group.connected else 'not configured' }}
+      </span>
+    </div>
+    <ul style="margin:.3rem 0 0; padding-left:1.2rem; font-size:.85rem;">
+      {% for var_name, present in group.vars %}
+        <li><code>{{ var_name }}</code> — {{ 'set' if present else 'not set' }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</article>
+
 <h2>Scan schedule</h2>
 <article class="card" style="max-width:560px;">
   <label style="display:flex; align-items:center; gap:.6rem; margin-bottom:1rem;">

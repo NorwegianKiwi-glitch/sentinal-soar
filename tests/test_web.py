@@ -359,6 +359,47 @@ def test_settings_page_renders():
     assert "Periodic scans" in body
 
 
+def test_settings_page_setup_status_shows_gemini_and_discord_connected():
+    # conftest.py sets GEMINI_API_KEY/DISCORD_BOT_TOKEN/DISCORD_GUILD_ID/DISCORD_CHANNEL_ID
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "Setup status" in body
+    assert "<code>GEMINI_API_KEY</code> — set" in body
+    assert "<code>DISCORD_BOT_TOKEN</code> — set" in body
+    assert "<code>DISCORD_GUILD_ID</code> — set" in body
+    assert "<code>DISCORD_CHANNEL_ID</code> — set" in body
+
+
+def test_settings_page_setup_status_shows_cloudflare_not_configured():
+    # conftest.py never sets CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "<code>CLOUDFLARE_API_TOKEN</code> — not set" in body
+    assert "<code>CLOUDFLARE_ZONE_ID</code> — not set" in body
+    assert "not configured" in body
+
+
+def test_settings_page_setup_status_never_shows_secret_values(monkeypatch):
+    monkeypatch.setattr(
+        "sentinal.web.routes.get_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "gemini_api_key": "super-secret-gemini-key",
+                "discord_bot_token": "super-secret-bot-token",
+                "discord_guild_id": 123,
+                "discord_channel_id": 456,
+                "discord_enabled": True,
+                "cloudflare_api_token": "super-secret-cf-token",
+                "cloudflare_zone_id": "zone-abc",
+                "cloudflare_configured": True,
+            },
+        )(),
+    )
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert "super-secret" not in body
+    assert "zone-abc" not in body
+
+
 def test_update_schedule_persists():
     from sentinal import schedule
 
@@ -498,7 +539,20 @@ def test_settings_page_shows_discord_toggle_when_connected():
 def test_settings_page_hides_toggle_when_discord_not_connected(monkeypatch):
     from sentinal.web import routes
 
-    monkeypatch.setattr(routes, "get_settings", lambda: SimpleNamespace(discord_enabled=False, cloudflare_configured=False))
+    monkeypatch.setattr(
+        routes,
+        "get_settings",
+        lambda: SimpleNamespace(
+            discord_enabled=False,
+            cloudflare_configured=False,
+            gemini_api_key="test-key",
+            discord_bot_token="",
+            discord_guild_id=0,
+            discord_channel_id=0,
+            cloudflare_api_token="",
+            cloudflare_zone_id="",
+        ),
+    )
 
     body = _client().get("/settings", headers=_auth_header()).data.decode()
     assert "isn't connected" in body

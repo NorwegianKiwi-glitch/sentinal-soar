@@ -184,6 +184,7 @@ def settings_page():
         cloudflare_configured=get_settings().cloudflare_configured,
         watched_hostnames=hostnames.get_hostnames(),
         alert_cooldown_minutes=access.get_alert_cooldown_minutes(),
+        setup_status=_setup_status(),
         active="settings",
     )
 
@@ -447,6 +448,42 @@ def _list_containers_for_settings() -> tuple[list[dict], str | None]:
         key=lambda c: c["name"],
     )
     return containers, None
+
+
+def _setup_status() -> list[dict]:
+    """Read-only summary of which integrations' env vars are set — never the
+    values themselves, just presence. Purely a setup aid; nothing here is
+    editable from the console, since these are only read once at boot (see
+    config.get_settings, @lru_cache) and some (the Discord bot token, in
+    particular) can't be hot-swapped without restarting the container."""
+    settings = get_settings()
+    return [
+        {
+            "name": "Gemini (AI triage)",
+            "required": True,
+            "connected": bool(settings.gemini_api_key),
+            "vars": [("GEMINI_API_KEY", bool(settings.gemini_api_key))],
+        },
+        {
+            "name": "Discord notifications",
+            "required": False,
+            "connected": settings.discord_enabled,
+            "vars": [
+                ("DISCORD_BOT_TOKEN", bool(settings.discord_bot_token)),
+                ("DISCORD_GUILD_ID", bool(settings.discord_guild_id)),
+                ("DISCORD_CHANNEL_ID", bool(settings.discord_channel_id)),
+            ],
+        },
+        {
+            "name": "Cloudflare access traffic",
+            "required": False,
+            "connected": settings.cloudflare_configured,
+            "vars": [
+                ("CLOUDFLARE_API_TOKEN", bool(settings.cloudflare_api_token)),
+                ("CLOUDFLARE_ZONE_ID", bool(settings.cloudflare_zone_id)),
+            ],
+        },
+    ]
 
 
 def _valid_hhmm(value: str) -> bool:
