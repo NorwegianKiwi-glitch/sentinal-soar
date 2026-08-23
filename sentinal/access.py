@@ -34,6 +34,8 @@ _FAILURE_STATUS = {401, 403, 429}
 _FAILURE_THRESHOLD = 5
 _VOLUME_THRESHOLD = 20
 
+_DEFAULT_ALERT_COOLDOWN_MINUTES = 30
+
 
 def looks_like_login_path(path: str) -> bool:
     lowered = path.lower()
@@ -51,6 +53,34 @@ def is_suspicious(path: str, status_code: int, request_count: int) -> bool:
     return request_count >= _VOLUME_THRESHOLD
 
 
+def get_alert_cooldown_minutes() -> int:
+    with db.SessionLocal() as session:
+        row = session.get(db.AccessConfig, 1)
+        return row.alert_cooldown_minutes if row is not None else _DEFAULT_ALERT_COOLDOWN_MINUTES
+
+
+def set_alert_cooldown_minutes(minutes: int) -> int:
+    """0 disables the cooldown — every flagged row notifies.
+
+    Written to the same AccessConfig singleton row hostnames.py seeds — if
+    this runs before that seed (only possible in tests, since
+    hostnames.seed_from_env() always runs first in __main__.main()), it
+    creates the row with hostnames_seeded left at its column default
+    (False), which would make seed_from_env() seed hostnames from the env
+    var afterwards. Harmless in real use given that ordering guarantee.
+    """
+    minutes = max(0, int(minutes))
+    with db.SessionLocal() as session:
+        row = session.get(db.AccessConfig, 1)
+        if row is None:
+            row = db.AccessConfig(id=1, alert_cooldown_minutes=minutes)
+            session.add(row)
+        else:
+            row.alert_cooldown_minutes = minutes
+        session.commit()
+        return row.alert_cooldown_minutes
+
+
 def _last_window_end() -> dt.datetime | None:
     with db.SessionLocal() as session:
         return session.scalars(
@@ -61,10 +91,13 @@ def _last_window_end() -> dt.datetime | None:
 def ingest_recent(now: dt.datetime | None = None, on_flagged=None) -> int:
     """Fetch traffic since the last ingest (with overlap) and store new rows.
 
-    `on_flagged`, if given, is called once per newly-stored row that the
-    heuristic flagged (e.g. bot.post_access_alert_threadsafe) — never for a
-    row already seen on an earlier, overlapping poll. A callback failure is
-    caught per-row so one bad notification can't lose the rest.
+    `on_flagged`, if given, is called for newly-stored flagged rows (e.g.
+    bot.post_access_alert_threadsafe) — never for a row already seen on an
+    earlier, overlapping poll, and at most once per source IP per
+    get_alert_cooldown_minutes() (editable from Settings), so a sustained
+    burst against one IP doesn't fire a notification every single minute. A
+    callback failure is caught per-row so one bad notification can't lose
+    the rest.
 
     Returns the number of newly-stored rows. Never raises: cloudflare.fetch_traffic
     already degrades to [] on API failure, and a DB hiccup here is caught too —
@@ -91,14 +124,45 @@ def ingest_recent(now: dt.datetime | None = None, on_flagged=None) -> int:
         log.exception("Cloudflare access-traffic ingest failed")
         return 0
     if on_flagged is not None:
-        for row in new_rows:
-            if not row.flagged:
+        _notify_flagged(new_rows, now, on_flagged)
+    return len(new_rows)
+
+
+def _notify_flagged(new_rows: list[db.AccessEvent], now: dt.datetime, on_flagged) -> None:
+    # Oldest first, so within one burst the earliest minute is what notifies.
+    flagged_rows = sorted((r for r in new_rows if r.flagged), key=lambda r: r.window_start)
+    if not flagged_rows:
+        return
+    cooldown = dt.timedelta(minutes=get_alert_cooldown_minutes())
+    with db.SessionLocal() as session:
+        for row in flagged_rows:
+            if cooldown > dt.timedelta(0) and _recently_alerted(session, row.client_ip, cooldown, now):
                 continue
+            # Marked before invoking the callback (and before it can possibly
+            # fail) so a stuck/erroring callback can't spam-retry every tick.
+            db_row = session.get(db.AccessEvent, row.id)
+            db_row.alerted_at = now
+            session.commit()
             try:
                 on_flagged(row)
             except Exception:
                 log.exception("on_flagged callback failed for access event %s", row.id)
-    return len(new_rows)
+
+
+def _recently_alerted(session, client_ip: str, cooldown: dt.timedelta, now: dt.datetime) -> bool:
+    cutoff = now - cooldown
+    return (
+        session.scalar(
+            select(db.AccessEvent.id)
+            .where(
+                db.AccessEvent.client_ip == client_ip,
+                db.AccessEvent.alerted_at.isnot(None),
+                db.AccessEvent.alerted_at >= cutoff,
+            )
+            .limit(1)
+        )
+        is not None
+    )
 
 
 def _store(groups: list[cloudflare.TrafficGroup]) -> list[db.AccessEvent]:

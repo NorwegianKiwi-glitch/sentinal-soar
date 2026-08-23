@@ -119,6 +119,78 @@ def test_ingest_recent_does_not_recall_on_flagged_for_already_stored_rows(monkey
     assert len(seen) == 1
 
 
+def test_get_alert_cooldown_minutes_defaults_to_30_without_a_row():
+    assert access.get_alert_cooldown_minutes() == 30
+
+
+def test_set_alert_cooldown_minutes_persists_and_clamps_negative():
+    assert access.set_alert_cooldown_minutes(45) == 45
+    assert access.get_alert_cooldown_minutes() == 45
+    assert access.set_alert_cooldown_minutes(-5) == 0
+
+
+def test_ingest_recent_suppresses_repeat_alert_for_same_ip_within_cooldown(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
+    seen = []
+
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [_group(minute=dt.datetime(2026, 8, 22, 10, 0), request_count=6)])
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 5), on_flagged=seen.append)
+
+    # 15 minutes later, well inside the default 30-minute cooldown: a genuinely
+    # new (non-duplicate) row from the same IP must still be stored, but not re-alert.
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [_group(minute=dt.datetime(2026, 8, 22, 10, 15), request_count=6)])
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 20), on_flagged=seen.append)
+
+    assert len(seen) == 1
+    with db.SessionLocal() as session:
+        assert len(session.scalars(select(db.AccessEvent)).all()) == 2  # both rows stored
+
+
+def test_ingest_recent_alerts_again_after_cooldown_expires(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
+    seen = []
+
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [_group(minute=dt.datetime(2026, 8, 22, 10, 0), request_count=6)])
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 5), on_flagged=seen.append)
+
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [_group(minute=dt.datetime(2026, 8, 22, 10, 35), request_count=6)])
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 40), on_flagged=seen.append)  # 35 min later
+
+    assert len(seen) == 2
+
+
+def test_ingest_recent_cooldown_is_per_ip(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
+    groups = [
+        _group(client_ip="203.0.113.5", minute=dt.datetime(2026, 8, 22, 10, 0), request_count=6),
+        _group(client_ip="203.0.113.9", minute=dt.datetime(2026, 8, 22, 10, 0), request_count=6),
+    ]
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: groups)
+    seen = []
+
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 5), on_flagged=seen.append)
+
+    assert {e.client_ip for e in seen} == {"203.0.113.5", "203.0.113.9"}
+
+
+def test_zero_cooldown_alerts_on_every_flagged_row(monkeypatch):
+    monkeypatch.setattr(access, "get_settings", _fake_settings)
+    monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])
+    access.set_alert_cooldown_minutes(0)
+    seen = []
+
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [_group(minute=dt.datetime(2026, 8, 22, 10, 0), request_count=6)])
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 5), on_flagged=seen.append)
+
+    monkeypatch.setattr(cloudflare, "fetch_traffic", lambda **kw: [_group(minute=dt.datetime(2026, 8, 22, 10, 6), request_count=6)])
+    access.ingest_recent(now=dt.datetime(2026, 8, 22, 10, 7), on_flagged=seen.append)
+
+    assert len(seen) == 2
+
+
 def test_ingest_recent_survives_a_raising_on_flagged_callback(monkeypatch):
     monkeypatch.setattr(access, "get_settings", _fake_settings)
     monkeypatch.setattr(hostnames, "get_hostnames", lambda: ["nextcloud.example.com"])

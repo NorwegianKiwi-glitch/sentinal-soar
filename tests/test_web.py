@@ -299,6 +299,36 @@ def test_delete_access_hostname_removes_it():
     assert res.get_json()["hostnames"] == []
 
 
+def test_settings_page_shows_default_alert_cooldown():
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert 'id="alert-cooldown" min="0" max="1440" value="30"' in body
+
+
+def test_update_access_alert_cooldown_requires_auth():
+    assert _client().post("/api/access-alert-cooldown", json={"minutes": 10}).status_code == 401
+
+
+def test_update_access_alert_cooldown_persists():
+    res = _client().post("/api/access-alert-cooldown", headers=_auth_header(), json={"minutes": 45})
+    assert res.status_code == 200
+    assert res.get_json()["minutes"] == 45
+
+    body = _client().get("/settings", headers=_auth_header()).data.decode()
+    assert 'id="alert-cooldown" min="0" max="1440" value="45"' in body
+
+
+def test_update_access_alert_cooldown_rejects_non_integer():
+    res = _client().post("/api/access-alert-cooldown", headers=_auth_header(), json={"minutes": "soon"})
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+
+def test_update_access_alert_cooldown_rejects_negative():
+    res = _client().post("/api/access-alert-cooldown", headers=_auth_header(), json={"minutes": -1})
+    assert res.status_code == 400
+    assert "error" in res.get_json()
+
+
 def test_archive_log_is_soft_delete_not_hard_delete():
     with db_module.SessionLocal() as session:
         log = db_module.ScanLog(image_name="nginx:latest", action_taken="CLEAN", log_payload={"details": "test"})

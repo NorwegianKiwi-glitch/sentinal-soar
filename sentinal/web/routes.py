@@ -7,7 +7,7 @@ import threading
 from flask import Blueprint, Response, jsonify, redirect, render_template, request, url_for
 from sqlalchemy import Integer, cast, func, select
 
-from .. import container_selection, credentials, db, docker_client, hostnames, notifications, patching, pipeline, schedule
+from .. import access, container_selection, credentials, db, docker_client, hostnames, notifications, patching, pipeline, schedule
 from ..config import get_settings
 
 log = logging.getLogger(__name__)
@@ -183,6 +183,7 @@ def settings_page():
         discord_notifications_enabled=notifications.enabled(),
         cloudflare_configured=get_settings().cloudflare_configured,
         watched_hostnames=hostnames.get_hostnames(),
+        alert_cooldown_minutes=access.get_alert_cooldown_minutes(),
         active="settings",
     )
 
@@ -363,6 +364,18 @@ def add_access_hostname():
 @bp.post("/api/access-hostnames/<path:hostname>/delete")
 def delete_access_hostname(hostname: str):
     return jsonify({"hostnames": hostnames.remove_hostname(hostname)})
+
+
+@bp.post("/api/access-alert-cooldown")
+def update_access_alert_cooldown():
+    data = request.get_json(silent=True) or request.form
+    try:
+        minutes = int(data.get("minutes"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "minutes must be a whole number"}), 400
+    if minutes < 0:
+        return jsonify({"error": "minutes cannot be negative"}), 400
+    return jsonify({"minutes": access.set_alert_cooldown_minutes(minutes)})
 
 
 # --- log / exception mutations ---------------------------------------------

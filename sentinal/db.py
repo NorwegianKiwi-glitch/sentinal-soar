@@ -162,18 +162,25 @@ class WatchedHostname(Base):
 
 
 class AccessConfig(Base):
-    """Single row (id=1): tracks whether watched_hostnames has ever been
-    seeded from CLOUDFLARE_HOSTNAMES, independent of whether the list is
-    currently empty. Without a separate marker, "seeded" would have to mean
-    "the table has rows," which would make seed_from_env() re-add the env
+    """Single row (id=1) of runtime-editable Access-feature settings.
+
+    `hostnames_seeded` tracks whether watched_hostnames has ever been seeded
+    from CLOUDFLARE_HOSTNAMES, independent of whether the list is currently
+    empty. Without a separate marker, "seeded" would have to mean "the table
+    has rows," which would make hostnames.seed_from_env() re-add the env
     var's hostnames the next time it's called (i.e. the next process
-    restart) after a user deliberately removed every hostname — this row
-    is what lets a deliberate empty list actually stick."""
+    restart) after a user deliberately removed every hostname — this row is
+    what lets a deliberate empty list actually stick.
+
+    `alert_cooldown_minutes` throttles Discord/Decisions-tab notifications
+    per source IP — see access.py's get/set_alert_cooldown_minutes() and
+    AccessEvent.alerted_at below."""
 
     __tablename__ = "access_config"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hostnames_seeded: Mapped[bool] = mapped_column(default=False)
+    alert_cooldown_minutes: Mapped[int] = mapped_column(default=30)
 
 
 class AccessEvent(Base):
@@ -210,6 +217,10 @@ class AccessEvent(Base):
     # it just stops asking for a look at this specific row.
     acknowledged: Mapped[bool] = mapped_column(default=False)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Set the moment a notification actually fires for this row's client_ip
+    # (not merely when the row is flagged) — see access.py's cooldown check,
+    # which only lets one alert per IP through per AccessConfig.alert_cooldown_minutes.
+    alerted_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 engine = create_engine(get_settings().database_url, future=True)
@@ -237,4 +248,8 @@ def _apply_migrations() -> None:
         )
         conn.execute(
             text("ALTER TABLE access_events ADD COLUMN IF NOT EXISTS acknowledged BOOLEAN NOT NULL DEFAULT FALSE")
+        )
+        conn.execute(text("ALTER TABLE access_events ADD COLUMN IF NOT EXISTS alerted_at TIMESTAMP"))
+        conn.execute(
+            text("ALTER TABLE access_config ADD COLUMN IF NOT EXISTS alert_cooldown_minutes INTEGER NOT NULL DEFAULT 30")
         )
